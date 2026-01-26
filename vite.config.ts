@@ -10,9 +10,17 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.ts',
+        onstart(args) {
+          args.startup()
+        },
         vite: {
           build: {
             outDir: 'dist-electron',
+            lib: {
+              entry: 'electron/main.ts',
+              formats: ['cjs'],
+              fileName: () => 'main.js'
+            },
             rollupOptions: {
               external: ['electron', 'uiohook-napi', 'robotjs', 'electron-store']
             }
@@ -21,12 +29,17 @@ export default defineConfig({
       },
       {
         entry: 'electron/preload.ts',
-        onstart(options) {
-          options.reload()
+        onstart(args) {
+          args.reload()
         },
         vite: {
           build: {
             outDir: 'dist-electron',
+            lib: {
+              entry: 'electron/preload.ts',
+              formats: ['cjs'],
+              fileName: () => 'preload.js'
+            },
             rollupOptions: {
               external: ['electron']
             }

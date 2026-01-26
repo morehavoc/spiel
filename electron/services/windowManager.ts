@@ -9,6 +9,19 @@ let previouslyFocusedWindow: { pid: number; name: string } | null = null
 
 const isDev = process.env.VITE_DEV_SERVER_URL !== undefined
 
+// Get the path to the dist-electron directory
+function getElectronDistPath(): string {
+  if (isDev) {
+    return path.join(process.cwd(), 'dist-electron')
+  }
+  // In production, the app is packaged and files are relative to app.getAppPath()
+  return path.join(app.getAppPath(), 'dist-electron')
+}
+
+function getPreloadPath(): string {
+  return path.join(getElectronDistPath(), 'preload.js')
+}
+
 function getAssetPath(filename: string): string {
   if (isDev) {
     return path.join(process.cwd(), 'resources', filename)
@@ -83,7 +96,7 @@ export function createRecordingBarWindow(): BrowserWindow {
     resizable: false,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: getPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -105,7 +118,7 @@ export function createRecordingBarWindow(): BrowserWindow {
   if (isDev) {
     recordingBarWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/recording-bar`)
   } else {
-    recordingBarWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+    recordingBarWindow.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'), {
       hash: '/recording-bar',
     })
   }
@@ -142,7 +155,7 @@ export function createSettingsWindow(): BrowserWindow {
     minimizable: false,
     maximizable: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: getPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -156,7 +169,7 @@ export function createSettingsWindow(): BrowserWindow {
   if (isDev) {
     settingsWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/settings`)
   } else {
-    settingsWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+    settingsWindow.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'), {
       hash: '/settings',
     })
   }

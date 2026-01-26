@@ -1,6 +1,16 @@
 import { app, BrowserWindow, ipcMain, systemPreferences } from 'electron'
 import path from 'path'
 import { IPC_CHANNELS } from './ipc'
+
+const isDev = process.env.VITE_DEV_SERVER_URL !== undefined
+
+// Get the path to the preload script
+function getPreloadPath(): string {
+  if (isDev) {
+    return path.join(process.cwd(), 'dist-electron', 'preload.js')
+  }
+  return path.join(app.getAppPath(), 'dist-electron', 'preload.js')
+}
 import { getSetting, setSetting, getAllSettings } from './store'
 import {
   createTray,
@@ -24,18 +34,18 @@ export const getMainWindow = () => mainWindow
 const createWindow = () => {
   // In production, we don't show a main window - just the tray and recording bar
   // For development, we show a main window for debugging
-  if (process.env.VITE_DEV_SERVER_URL) {
+  if (isDev) {
     mainWindow = new BrowserWindow({
       width: 800,
       height: 600,
       webPreferences: {
-        preload: path.join(__dirname, 'preload.js'),
+        preload: getPreloadPath(),
         contextIsolation: true,
         nodeIntegration: false,
       },
     })
 
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL!)
     mainWindow.webContents.openDevTools()
   }
 }

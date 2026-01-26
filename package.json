@@ -2,12 +2,10 @@
   "name": "spiel",
   "version": "1.0.0",
   "description": "Voice-to-text dictation app for macOS using OpenAI Whisper",
-  "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "build:mac": "npm run build && electron-builder --mac",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
