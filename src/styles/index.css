@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles for the recording bar */
+.recording-bar {
+  -webkit-app-region: drag;
+}
+
+.recording-bar button,
+.recording-bar input {
+  -webkit-app-region: no-drag;
+}
+
+/* Waveform animation */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

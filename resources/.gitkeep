@@ -1,0 +1,5 @@
+# Placeholder for resource files
+# Add these files before building:
+# - icon.icns (app icon)
+# - tray-icon.png (16x16 or 22x22 tray icon)
+# - tray-icon-recording.png (tray icon when recording)
