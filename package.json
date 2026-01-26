@@ -11,7 +11,7 @@
     "preview": "vite preview"
   },
   "author": "",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "electron-store": "^8.1.0",
     "openai": "^4.52.0",
