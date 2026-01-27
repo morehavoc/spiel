@@ -33,48 +33,61 @@ A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Pres
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/spiel.git
+git clone git@github.com:morehavoc/spiel.git
 cd spiel
 
 # Install dependencies
 npm install
 
-# Run in development mode
-npm run dev
-
 # Build for production
 npm run build:mac
+```
+
+The built app will be in the `release/` folder as a `.dmg` file. Open it and drag Spiel to your Applications folder.
+
+#### First Launch
+
+On first launch, macOS may block the app since it's not signed. To open it:
+
+1. Go to **System Preferences → Privacy & Security**
+2. Scroll down and click **"Open Anyway"** next to the Spiel message
+3. Grant **Microphone** permission when prompted
+4. Grant **Accessibility** permission (required for hotkey detection and text insertion):
+   - Go to **System Preferences → Privacy & Security → Accessibility**
+   - Add Spiel to the list and enable it
+
+#### Development Mode
+
+```bash
+# Run with hot reload for development
+npm run dev
 ```
 
 ## Usage
 
 1. **Start Recording**: Double-tap the Control key (or your configured hotkey)
-2. **Speak**: Talk naturally - the app detects when you pause
-3. **Stop Recording**: Double-tap Control again (or wait for extended silence)
-4. **Text Inserted**: Your transcription is automatically pasted into the active application
+2. **Speak**: Talk naturally - the app detects when you pause and sends audio for transcription
+3. **Add Line Breaks**: Press **Enter** while recording to add a new line to your transcript
+4. **Stop Recording**: Double-tap Control again to stop, apply AI cleanup (if enabled), and insert text
+5. **Text Inserted**: Your transcription is automatically pasted into the previously active application
 
 ### Settings
 
-Access settings from the menu bar icon:
+Access settings by clicking the **gear icon (⚙️)** in the recording bar, or from the menu bar icon:
 
 - **API Key**: Your OpenAI API key (stored encrypted)
 - **Hotkey**: Choose between double-tap Control, F5, or a custom shortcut
 - **Silence Duration**: How long to wait after speech before processing (default: 900ms)
 - **Language Hint**: Improve accuracy by specifying your primary language
-- **AI Cleanup**: Enable/disable grammar correction and filler word removal
+- **AI Cleanup**: Enable/disable grammar correction and filler word removal (runs on full transcript when you stop recording)
 - **Insertion Method**: Paste (faster) or type character-by-character
 
 ## Development
 
 ```bash
-# Run development server with hot reload
-npm run dev
-
-# Type check
-npm run typecheck
-
-# Build for macOS
-npm run build:mac
+npm run dev        # Run with hot reload
+npm run typecheck  # Type check
+npm run build:mac  # Build for macOS
 ```
 
 ### Project Structure
