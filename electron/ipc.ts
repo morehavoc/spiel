@@ -33,6 +33,9 @@ export const IPC_CHANNELS = {
   // Text insertion
   TEXT_INSERT: 'text:insert',
   TEXT_INSERT_RESULT: 'text:insert-result',
+
+  // Stop recording and insert
+  RECORDING_STOP_AND_INSERT: 'recording:stop-and-insert',
 } as const
 
 export type IpcChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS]

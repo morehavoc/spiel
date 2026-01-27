@@ -1,21 +1,17 @@
 import { uIOhook, UiohookKey } from 'uiohook-napi'
-import { globalShortcut, BrowserWindow } from 'electron'
+import { globalShortcut } from 'electron'
 import { EventEmitter } from 'events'
 import { getSetting } from '../store'
 import { IPC_CHANNELS } from '../ipc'
+import { getRecordingBarWindow } from './windowManager'
 
 class HotkeyManager extends EventEmitter {
   private lastControlPress = 0
   private lastF5Press = 0
   private isListening = false
-  private recordingBarWindow: BrowserWindow | null = null
 
   constructor() {
     super()
-  }
-
-  setRecordingBarWindow(window: BrowserWindow | null): void {
-    this.recordingBarWindow = window
   }
 
   start(): void {
@@ -96,11 +92,16 @@ class HotkeyManager extends EventEmitter {
   }
 
   private triggerRecording(): void {
+    console.log('HotkeyManager: Trigger fired')
     this.emit('trigger')
 
     // Send toggle recording event to the recording bar window
-    if (this.recordingBarWindow && !this.recordingBarWindow.isDestroyed()) {
-      this.recordingBarWindow.webContents.send(IPC_CHANNELS.RECORDING_TOGGLE)
+    const recordingBarWindow = getRecordingBarWindow()
+    if (recordingBarWindow && !recordingBarWindow.isDestroyed()) {
+      console.log('HotkeyManager: Sending toggle to recording bar window')
+      recordingBarWindow.webContents.send(IPC_CHANNELS.RECORDING_TOGGLE)
+    } else {
+      console.log('HotkeyManager: No recording bar window to send toggle to')
     }
   }
 

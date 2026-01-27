@@ -64,44 +64,70 @@ async function simulateTyping(text: string): Promise<void> {
   }
 }
 
-async function focusPreviousApp(): Promise<void> {
-  if (process.platform === 'darwin') {
-    // Activate the previously active application
-    // This uses AppleScript to switch back to the previous app
-    await execAsync(`osascript -e '
-      tell application "System Events"
-        set frontmostProcess to first process whose frontmost is true
-        set visible of frontmostProcess to false
-      end tell
-    '`).catch(() => {
-      // Silently fail - the app might already be in the background
-    })
+// Store the previous app's name to restore focus later
+let previousAppName: string | null = null
 
-    // Small delay to ensure focus switch completes
-    await new Promise((resolve) => setTimeout(resolve, 50))
+export async function savePreviousApp(): Promise<void> {
+  if (process.platform === 'darwin') {
+    try {
+      const { stdout } = await execAsync(`osascript -e '
+        tell application "System Events"
+          set frontApp to name of first process whose frontmost is true
+          return frontApp
+        end tell
+      '`)
+      previousAppName = stdout.trim()
+      console.log('TextInserter: Saved previous app:', previousAppName)
+    } catch (error) {
+      console.error('TextInserter: Failed to save previous app:', error)
+    }
+  }
+}
+
+async function focusPreviousApp(): Promise<void> {
+  if (process.platform === 'darwin' && previousAppName) {
+    try {
+      console.log('TextInserter: Activating previous app:', previousAppName)
+      await execAsync(`osascript -e 'tell application "${previousAppName}" to activate'`)
+      // Small delay to ensure focus switch completes
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    } catch (error) {
+      console.error('TextInserter: Failed to focus previous app:', error)
+    }
   }
 }
 
 export async function insertText(text: string): Promise<{ success: boolean; error?: string }> {
+  console.log('TextInserter: insertText called with', text.length, 'characters')
+
   if (!text || text.trim().length === 0) {
     return { success: false, error: 'No text to insert' }
   }
 
   const insertionMethod = getSetting('insertionMethod')
+  console.log('TextInserter: Using insertion method:', insertionMethod)
 
   try {
+    // Focus the previous app first
+    console.log('TextInserter: Focusing previous app...')
+    await focusPreviousApp()
+
     if (insertionMethod === 'paste') {
       // Save current clipboard
       saveClipboard()
 
       // Write text to clipboard
       clipboard.writeText(text)
+      console.log('TextInserter: Wrote to clipboard:', text.substring(0, 50))
+      console.log('TextInserter: Clipboard now contains:', clipboard.readText().substring(0, 50))
 
-      // Small delay to ensure clipboard is ready
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      // Small delay to ensure clipboard is ready and focus has switched
+      await new Promise((resolve) => setTimeout(resolve, 100))
 
       // Simulate Cmd+V
+      console.log('TextInserter: Simulating paste...')
       await simulatePaste()
+      console.log('TextInserter: Paste simulated successfully')
 
       // Restore clipboard after a delay
       restoreClipboard()

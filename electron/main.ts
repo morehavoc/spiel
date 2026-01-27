@@ -146,7 +146,10 @@ function setupIpcHandlers() {
   })
 
   ipcMain.handle(IPC_CHANNELS.API_TRANSCRIBE, async (_event, audioBuffer: ArrayBuffer) => {
-    return await transcribeAudio(audioBuffer)
+    console.log('IPC: Received transcribe request, buffer size:', audioBuffer?.byteLength)
+    const result = await transcribeAudio(audioBuffer)
+    console.log('IPC: Transcription result:', result)
+    return result
   })
 
   ipcMain.handle(IPC_CHANNELS.API_CLEANUP, async (_event, text: string) => {
@@ -155,6 +158,26 @@ function setupIpcHandlers() {
 
   ipcMain.handle(IPC_CHANNELS.TEXT_INSERT, async (_event, text: string) => {
     return await insertText(text)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RECORDING_STOP_AND_INSERT, async (_event, text: string) => {
+    console.log('IPC: Stop and insert called, text length:', text?.length ?? 0)
+
+    // Hide the recording bar first
+    hideRecordingBar()
+
+    // Wait for window to hide and focus to switch
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    // Insert the text if there is any
+    if (text && text.trim().length > 0) {
+      console.log('IPC: Inserting text...')
+      const result = await insertText(text)
+      console.log('IPC: Insert result:', result)
+      return result
+    }
+
+    return { success: true }
   })
 
   ipcMain.handle(IPC_CHANNELS.AUDIO_CHUNK, async (_event, _payload) => {
@@ -177,11 +200,7 @@ app.whenReady().then(async () => {
   // Create system tray
   createTray()
 
-  // Create recording bar window (hidden initially)
-  const recordingBar = createRecordingBarWindow()
-
-  // Start hotkey listener
-  hotkeyManager.setRecordingBarWindow(recordingBar)
+  // Start hotkey listener (recording bar window will be created on first use)
   hotkeyManager.start()
 
   hotkeyManager.on('accessibility-error', (error) => {
@@ -190,8 +209,16 @@ app.whenReady().then(async () => {
   })
 
   hotkeyManager.on('trigger', () => {
-    // Show the recording bar when hotkey is triggered
-    showRecordingBar()
+    // Toggle the recording bar - only show if not already visible
+    const recordingBar = getRecordingBarWindow()
+    if (recordingBar && recordingBar.isVisible()) {
+      // Window is visible, let the toggle IPC handle stopping/hiding
+      console.log('HotkeyManager: Recording bar visible, toggle will handle it')
+    } else {
+      // Window not visible, show it
+      console.log('HotkeyManager: Recording bar not visible, showing it')
+      showRecordingBar()
+    }
   })
 
   // Create main window (only in dev mode)

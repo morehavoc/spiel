@@ -48,6 +48,8 @@ const electronAPI = {
   showSettings: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_SETTINGS),
   showRecordingBar: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_SHOW_RECORDING_BAR),
   hideRecordingBar: () => ipcRenderer.invoke(IPC_CHANNELS.WINDOW_HIDE_RECORDING_BAR),
+  stopRecordingAndInsert: (text: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RECORDING_STOP_AND_INSERT, text),
 
   // System
   getPermissions: (): Promise<{ microphone: boolean; accessibility: boolean }> =>

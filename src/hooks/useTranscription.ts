@@ -31,34 +31,46 @@ export function useTranscription() {
 
       // Convert blob to ArrayBuffer
       const arrayBuffer = await audioBlob.arrayBuffer()
+      console.log('useTranscription: Sending audio to main process, size:', arrayBuffer.byteLength)
 
       // Send to main process for transcription
       const result = await window.electronAPI.transcribe(arrayBuffer)
+      console.log('useTranscription: Received result from main:', result)
 
       if (result.error) {
-        console.error('Transcription error:', result.error)
+        console.error('useTranscription: Transcription error:', result.error)
         return
       }
 
       if (result.text) {
+        console.log('useTranscription: Got text:', result.text)
         // Optionally apply AI cleanup
         const cleanedResult = await window.electronAPI.cleanupText(result.text)
         const finalText = cleanedResult.text || result.text
+        console.log('useTranscription: Final text after cleanup:', finalText)
 
         appendTranscript(finalText)
+      } else {
+        console.log('useTranscription: No text in result')
       }
     } catch (error) {
-      console.error('Error processing audio chunk:', error)
+      console.error('useTranscription: Error processing audio chunk:', error)
     } finally {
       setRecordingState('recording')
     }
   }, [appendTranscript, setRecordingState])
 
   const insertTranscript = useCallback(async () => {
-    if (!transcript.trim()) return
+    console.log('insertTranscript called, transcript:', transcript.substring(0, 50))
+    if (!transcript.trim()) {
+      console.log('insertTranscript: No transcript to insert')
+      return
+    }
 
     try {
+      console.log('insertTranscript: Calling insertText IPC...')
       const result = await window.electronAPI.insertText(transcript)
+      console.log('insertTranscript: Result:', result)
       if (result.success) {
         clearTranscript()
       } else if (result.error) {

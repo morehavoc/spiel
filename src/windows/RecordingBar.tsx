@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useRef } from 'react'
 import { StatusIndicator } from '../components/StatusIndicator'
 import { Waveform } from '../components/Waveform'
 import { TranscriptDisplay } from '../components/TranscriptDisplay'
@@ -29,7 +29,7 @@ export function RecordingBar() {
     minSpeechDuration: settings?.minSpeechDuration ?? 500,
   })
 
-  const { processAudioChunk, insertTranscript, clearTranscript } = useTranscription()
+  const { processAudioChunk, clearTranscript } = useTranscription()
 
   // Load settings on mount
   useEffect(() => {
@@ -44,31 +44,29 @@ export function RecordingBar() {
   // Handle speech segments
   useEffect(() => {
     onSpeechSegment((blob) => {
+      console.log('RecordingBar: Speech segment received, size:', blob.size)
       processAudioChunk(blob)
     })
   }, [onSpeechSegment, processAudioChunk])
 
-  // Handle toggle recording from main process
-  useEffect(() => {
-    const unsubscribe = window.electronAPI.onToggleRecording(() => {
-      handleToggleRecording()
-    })
-    return () => unsubscribe()
-  }, [isRecording])
-
   const handleToggleRecording = useCallback(async () => {
+    console.log('handleToggleRecording called, isRecording:', isRecording)
     if (isRecording) {
+      console.log('Stopping recording, transcript length:', transcript.length)
       // Stop recording
       stopRecording()
       setRecordingState('idle')
 
-      // Insert the transcript
-      if (transcript.trim()) {
-        await insertTranscript()
-      }
+      // Use atomic stop-and-insert which handles hiding window and inserting in main process
+      const textToInsert = transcript.trim()
+      console.log('Calling stopRecordingAndInsert with text:', textToInsert.substring(0, 50))
+      const result = await window.electronAPI.stopRecordingAndInsert(textToInsert)
+      console.log('stopRecordingAndInsert result:', result)
 
-      // Hide the recording bar
-      await window.electronAPI.hideRecordingBar()
+      // Clear the transcript after successful insert
+      if (result.success) {
+        clearTranscript()
+      }
     } else {
       // Start recording
       try {
@@ -80,7 +78,26 @@ export function RecordingBar() {
         setRecordingState('error')
       }
     }
-  }, [isRecording, transcript, stopRecording, startRecording, setRecordingState, insertTranscript, clearTranscript, setError])
+  }, [isRecording, transcript, stopRecording, startRecording, setRecordingState, clearTranscript, setError])
+
+  // Handle toggle recording from main process
+  // Use a ref to always have the latest callback to avoid stale closures
+  const handleToggleRef = useRef(handleToggleRecording)
+  useEffect(() => {
+    handleToggleRef.current = handleToggleRecording
+  }, [handleToggleRecording])
+
+  useEffect(() => {
+    console.log('Setting up onToggleRecording listener')
+    const unsubscribe = window.electronAPI.onToggleRecording(() => {
+      console.log('onToggleRecording callback fired')
+      handleToggleRef.current()
+    })
+    return () => {
+      console.log('Cleaning up onToggleRecording listener')
+      unsubscribe()
+    }
+  }, []) // Only set up once, use ref for latest callback
 
   // Start recording automatically when the window is shown
   useEffect(() => {
@@ -103,8 +120,8 @@ export function RecordingBar() {
   }, [])
 
   return (
-    <div className="recording-bar bg-gray-900/95 backdrop-blur-sm rounded-2xl border border-gray-700 p-4 shadow-2xl">
-      <div className="flex flex-col gap-3">
+    <div className="recording-bar h-full bg-gray-900/95 backdrop-blur-sm rounded-2xl border border-gray-700 p-4 shadow-2xl">
+      <div className="h-full flex flex-col gap-3">
         {/* Header with status */}
         <div className="flex items-center justify-between">
           <StatusIndicator state={recordingState} />

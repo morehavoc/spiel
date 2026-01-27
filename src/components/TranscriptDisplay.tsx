@@ -17,7 +17,7 @@ export function TranscriptDisplay({ text, isProcessing }: TranscriptDisplayProps
 
   if (!text && !isProcessing) {
     return (
-      <div className="text-gray-500 text-sm italic">
+      <div className="flex-1 min-h-8 text-gray-500 text-sm italic">
         Start speaking...
       </div>
     )
@@ -26,7 +26,7 @@ export function TranscriptDisplay({ text, isProcessing }: TranscriptDisplayProps
   return (
     <div
       ref={containerRef}
-      className="max-h-16 overflow-y-auto text-sm text-white leading-relaxed"
+      className="flex-1 min-h-8 overflow-y-auto text-sm text-white leading-relaxed"
     >
       {text}
       {isProcessing && (

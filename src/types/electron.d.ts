@@ -57,6 +57,7 @@ export interface ElectronAPI {
   showSettings: () => Promise<void>
   showRecordingBar: () => Promise<void>
   hideRecordingBar: () => Promise<void>
+  stopRecordingAndInsert: (text: string) => Promise<{ success: boolean; error?: string }>
 
   // System
   getPermissions: () => Promise<{ microphone: boolean; accessibility: boolean }>

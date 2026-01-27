@@ -95,7 +95,7 @@ export function useAudioRecorder(config: UseAudioRecorderConfig = {}): UseAudioR
 
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType,
-        audioBitsPerSecond: 16000,
+        audioBitsPerSecond: 64000, // 64kbps for good Opus quality
       })
       mediaRecorderRef.current = mediaRecorder
 

@@ -1,6 +1,7 @@
 import { BrowserWindow, Tray, Menu, app, nativeImage, screen } from 'electron'
 import path from 'path'
 import { getSetting, setSetting } from '../store'
+import { savePreviousApp } from './textInserter'
 
 let tray: Tray | null = null
 let recordingBarWindow: BrowserWindow | null = null
@@ -80,7 +81,7 @@ export function createRecordingBarWindow(): BrowserWindow {
 
   // Default position: top-center of screen
   const windowWidth = 400
-  const windowHeight = 100
+  const windowHeight = 160
   const defaultX = Math.round((screenWidth - windowWidth) / 2)
   const defaultY = 50
 
@@ -93,7 +94,10 @@ export function createRecordingBarWindow(): BrowserWindow {
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
-    resizable: false,
+    resizable: true,
+    minWidth: 300,
+    minHeight: 120,
+    maxHeight: 400,
     show: false,
     webPreferences: {
       preload: getPreloadPath(),
@@ -126,14 +130,19 @@ export function createRecordingBarWindow(): BrowserWindow {
   return recordingBarWindow
 }
 
-export function showRecordingBar(): void {
+export async function showRecordingBar(): Promise<void> {
+  // Save the currently focused app before showing our window
+  await savePreviousApp()
+
   if (!recordingBarWindow) {
     createRecordingBarWindow()
   }
+  console.log('WindowManager: Showing recording bar')
   recordingBarWindow?.show()
 }
 
 export function hideRecordingBar(): void {
+  console.log('WindowManager: Hiding recording bar')
   recordingBarWindow?.hide()
 }
 

@@ -1,6 +1,5 @@
-import OpenAI from 'openai'
+import OpenAI, { toFile } from 'openai'
 import { getApiKey, getSetting } from '../store'
-import { Readable } from 'stream'
 
 let openaiClient: OpenAI | null = null
 
@@ -53,12 +52,16 @@ export async function transcribeAudio(
     const client = getClient()
     const languageHint = getSetting('languageHint')
 
-    // Convert ArrayBuffer to a file-like object for the API
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/webm' })
+    // Convert ArrayBuffer to Buffer (Node.js)
+    const buffer = Buffer.from(audioBuffer)
+    console.log('Whisper API: Received audio buffer, size:', buffer.length, 'bytes')
 
-    // Create a File object from the blob
-    const file = new File([audioBlob], 'audio.webm', { type: 'audio/webm' })
+    // Use OpenAI's toFile helper to create a proper file object
+    console.log('Whisper API: Creating file object...')
+    const file = await toFile(buffer, 'audio.webm', { type: 'audio/webm' })
+    console.log('Whisper API: File object created')
 
+    console.log('Whisper API: Calling transcription API...')
     const transcription = await client.audio.transcriptions.create({
       file: file,
       model: 'gpt-4o-mini-transcribe',
@@ -66,9 +69,10 @@ export async function transcribeAudio(
       response_format: 'text',
     })
 
+    console.log('Whisper API: Transcription result:', transcription)
     return { text: transcription }
   } catch (error) {
-    console.error('Transcription error:', error)
+    console.error('Whisper API: Transcription error:', error)
 
     if (error instanceof OpenAI.AuthenticationError) {
       return { text: '', error: 'Invalid API key' }
@@ -85,12 +89,4 @@ export async function transcribeAudio(
       error: error instanceof Error ? error.message : 'Transcription failed',
     }
   }
-}
-
-// Convert ArrayBuffer to a readable stream for the OpenAI API
-function arrayBufferToReadable(buffer: ArrayBuffer): Readable {
-  const readable = new Readable()
-  readable.push(Buffer.from(buffer))
-  readable.push(null)
-  return readable
 }

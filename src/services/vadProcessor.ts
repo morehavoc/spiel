@@ -28,6 +28,7 @@ export class VADProcessor {
   private silenceStartTime = 0
   private speechStartTime = 0
   private audioChunks: Blob[] = []
+  private headerChunk: Blob | null = null // WebM header must be preserved
   private analyserNode: AnalyserNode | null = null
   private animationFrameId: number | null = null
 
@@ -43,6 +44,11 @@ export class VADProcessor {
 
   // Call this with each audio chunk from the MediaRecorder
   processAudioChunk(chunk: Blob): void {
+    // The first chunk contains the WebM header - save it separately
+    if (this.headerChunk === null) {
+      this.headerChunk = chunk
+      console.log('VAD: Saved header chunk, size:', chunk.size, 'bytes')
+    }
     this.audioChunks.push(chunk)
   }
 
@@ -92,7 +98,23 @@ export class VADProcessor {
 
   private completeSpeechSegment(): void {
     if (this.audioChunks.length > 0) {
-      const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' })
+      // Always include the header chunk at the beginning for a valid WebM file
+      const hasHeader = this.headerChunk !== null
+      const needsPrepend = hasHeader && this.audioChunks[0] !== this.headerChunk
+      const chunks = needsPrepend
+        ? [this.headerChunk!, ...this.audioChunks]
+        : this.audioChunks
+
+      console.log('VAD: Creating audio blob', {
+        hasHeader,
+        needsPrepend,
+        headerSize: this.headerChunk?.size ?? 0,
+        chunkCount: this.audioChunks.length,
+        totalChunks: chunks.length,
+      })
+
+      const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' })
+      console.log('VAD: Final blob size:', audioBlob.size, 'bytes')
       this.events.onSpeechEnd(audioBlob)
     }
     this.resetState()
@@ -103,6 +125,7 @@ export class VADProcessor {
     this.silenceStartTime = 0
     this.speechStartTime = 0
     this.audioChunks = []
+    // Don't reset headerChunk - it stays valid for the entire recording session
   }
 
   private startWaveformUpdates(): void {
