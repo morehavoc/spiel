@@ -44,12 +44,8 @@ export function useTranscription() {
 
       if (result.text) {
         console.log('useTranscription: Got text:', result.text)
-        // Optionally apply AI cleanup
-        const cleanedResult = await window.electronAPI.cleanupText(result.text)
-        const finalText = cleanedResult.text || result.text
-        console.log('useTranscription: Final text after cleanup:', finalText)
-
-        appendTranscript(finalText)
+        // Append raw transcription - AI cleanup happens at the end on full text
+        appendTranscript(result.text)
       } else {
         console.log('useTranscription: No text in result')
       }

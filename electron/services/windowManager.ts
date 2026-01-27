@@ -30,9 +30,53 @@ function getAssetPath(filename: string): string {
   return path.join(process.resourcesPath, filename)
 }
 
+// Create a simple tray icon programmatically
+function createTrayIcon(isRecording = false): Electron.NativeImage {
+  // Create a 16x16 icon with a simple circle/mic shape
+  const size = 16
+  const canvas = Buffer.alloc(size * size * 4) // RGBA
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4
+      const cx = size / 2
+      const cy = size / 2
+      const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+
+      if (isRecording) {
+        // Red filled circle for recording
+        if (dist < 6) {
+          canvas[idx] = 255     // R
+          canvas[idx + 1] = 59  // G
+          canvas[idx + 2] = 48  // B
+          canvas[idx + 3] = 255 // A
+        } else {
+          canvas[idx + 3] = 0 // Transparent
+        }
+      } else {
+        // Black circle outline for idle (template image)
+        if (dist >= 5 && dist < 7) {
+          canvas[idx] = 0       // R
+          canvas[idx + 1] = 0   // G
+          canvas[idx + 2] = 0   // B
+          canvas[idx + 3] = 255 // A
+        } else {
+          canvas[idx + 3] = 0 // Transparent
+        }
+      }
+    }
+  }
+
+  const icon = nativeImage.createFromBuffer(canvas, { width: size, height: size })
+  // Only set as template for non-recording (so it adapts to menu bar)
+  if (!isRecording) {
+    icon.setTemplateImage(true)
+  }
+  return icon
+}
+
 export function createTray(): Tray {
-  // Create a simple 16x16 tray icon (placeholder)
-  const icon = nativeImage.createEmpty()
+  const icon = createTrayIcon(false)
   tray = new Tray(icon)
 
   updateTrayMenu()
@@ -71,7 +115,10 @@ export function updateTrayMenu(isRecording = false): void {
 
 export function setTrayRecordingState(isRecording: boolean): void {
   updateTrayMenu(isRecording)
-  // TODO: Update tray icon when we have actual icons
+  // Update tray icon to show recording state
+  if (tray) {
+    tray.setImage(createTrayIcon(isRecording))
+  }
 }
 
 export function createRecordingBarWindow(): BrowserWindow {
@@ -139,11 +186,13 @@ export async function showRecordingBar(): Promise<void> {
   }
   console.log('WindowManager: Showing recording bar')
   recordingBarWindow?.show()
+  setTrayRecordingState(true)
 }
 
 export function hideRecordingBar(): void {
   console.log('WindowManager: Hiding recording bar')
   recordingBarWindow?.hide()
+  setTrayRecordingState(false)
 }
 
 export function getRecordingBarWindow(): BrowserWindow | null {

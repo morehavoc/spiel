@@ -171,8 +171,21 @@ function setupIpcHandlers() {
 
     // Insert the text if there is any
     if (text && text.trim().length > 0) {
+      // Apply AI cleanup to the full transcript (if enabled in settings)
+      console.log('IPC: Applying AI cleanup to full transcript...')
+      const cleanedResult = await cleanupText(text)
+      const finalText = cleanedResult.text || text
+
+      if (cleanedResult.error) {
+        console.log('IPC: AI cleanup error (using original):', cleanedResult.error)
+      } else if (finalText !== text) {
+        console.log('IPC: AI cleanup applied, new length:', finalText.length)
+      } else {
+        console.log('IPC: AI cleanup skipped or no changes')
+      }
+
       console.log('IPC: Inserting text...')
-      const result = await insertText(text)
+      const result = await insertText(finalText)
       console.log('IPC: Insert result:', result)
       return result
     }

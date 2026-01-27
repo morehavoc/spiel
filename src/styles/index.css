@@ -7,6 +7,10 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+}
+
+/* Recording bar should not scroll at the window level */
+.recording-bar-window {
   overflow: hidden;
 }
 
