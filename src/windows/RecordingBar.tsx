@@ -13,6 +13,7 @@ export function RecordingBar() {
     waveformData,
     setWaveformData,
     transcript,
+    appendTranscript,
     settings,
     setSettings,
     setError,
@@ -31,6 +32,31 @@ export function RecordingBar() {
 
   const { processAudioChunk, clearTranscript } = useTranscription()
 
+  // Track if we're waiting to stop (user requested stop while processing)
+  const pendingStopRef = useRef(false)
+  const processingCountRef = useRef(0)
+
+  // Wrap processAudioChunk to track pending operations
+  const processAudioChunkTracked = useCallback(async (blob: Blob) => {
+    processingCountRef.current++
+    try {
+      await processAudioChunk(blob)
+    } finally {
+      processingCountRef.current--
+      // If stop was requested and this was the last pending operation, complete the stop
+      if (pendingStopRef.current && processingCountRef.current === 0) {
+        pendingStopRef.current = false
+        // Get the latest transcript from the store
+        const finalTranscript = useAppStore.getState().transcript.trim()
+        console.log('Processing complete, now stopping with transcript:', finalTranscript.substring(0, 50))
+        const result = await window.electronAPI.stopRecordingAndInsert(finalTranscript)
+        if (result.success) {
+          clearTranscript()
+        }
+      }
+    }
+  }, [processAudioChunk, clearTranscript])
+
   // Load settings on mount
   useEffect(() => {
     window.electronAPI.getAllSettings().then(setSettings)
@@ -45,25 +71,33 @@ export function RecordingBar() {
   useEffect(() => {
     onSpeechSegment((blob) => {
       console.log('RecordingBar: Speech segment received, size:', blob.size)
-      processAudioChunk(blob)
+      processAudioChunkTracked(blob)
     })
-  }, [onSpeechSegment, processAudioChunk])
+  }, [onSpeechSegment, processAudioChunkTracked])
 
   const handleToggleRecording = useCallback(async () => {
     console.log('handleToggleRecording called, isRecording:', isRecording)
     if (isRecording) {
-      console.log('Stopping recording, transcript length:', transcript.length)
-      // Stop recording
+      console.log('Stopping recording, transcript length:', transcript.length, 'pending operations:', processingCountRef.current)
+      // Stop the audio recorder immediately (no new audio captured)
       stopRecording()
-      setRecordingState('idle')
 
-      // Use atomic stop-and-insert which handles hiding window and inserting in main process
+      // Check if there are pending transcription operations
+      if (processingCountRef.current > 0) {
+        console.log('Waiting for pending transcriptions to complete...')
+        setRecordingState('processing') // Show processing state
+        pendingStopRef.current = true
+        // The actual stop will happen when processing completes (see processAudioChunkTracked)
+        return
+      }
+
+      // No pending operations, stop immediately
+      setRecordingState('idle')
       const textToInsert = transcript.trim()
       console.log('Calling stopRecordingAndInsert with text:', textToInsert.substring(0, 50))
       const result = await window.electronAPI.stopRecordingAndInsert(textToInsert)
       console.log('stopRecordingAndInsert result:', result)
 
-      // Clear the transcript after successful insert
       if (result.success) {
         clearTranscript()
       }
@@ -99,6 +133,20 @@ export function RecordingBar() {
     }
   }, []) // Only set up once, use ref for latest callback
 
+  // Handle Enter key to add newline to transcript
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && isRecording) {
+        e.preventDefault()
+        console.log('Enter pressed, adding newline')
+        appendTranscript('\n')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isRecording, appendTranscript])
+
   // Start recording automatically when the window is shown
   useEffect(() => {
     const startOnShow = async () => {
@@ -121,7 +169,7 @@ export function RecordingBar() {
 
   return (
     <div className="recording-bar h-full bg-gray-900/95 backdrop-blur-sm rounded-2xl border border-gray-700 p-4 shadow-2xl">
-      <div className="h-full flex flex-col gap-3">
+      <div className="h-full flex flex-col gap-3 min-h-0">
         {/* Header with status */}
         <div className="flex items-center justify-between">
           <StatusIndicator state={recordingState} />

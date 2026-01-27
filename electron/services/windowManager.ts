@@ -80,8 +80,8 @@ export function createRecordingBarWindow(): BrowserWindow {
   const { width: screenWidth } = display.workAreaSize
 
   // Default position: top-center of screen
-  const windowWidth = 400
-  const windowHeight = 160
+  const windowWidth = 450
+  const windowHeight = 300
   const defaultX = Math.round((screenWidth - windowWidth) / 2)
   const defaultY = 50
 
@@ -96,8 +96,8 @@ export function createRecordingBarWindow(): BrowserWindow {
     skipTaskbar: true,
     resizable: true,
     minWidth: 300,
-    minHeight: 120,
-    maxHeight: 400,
+    minHeight: 150,
+    maxHeight: 600,
     show: false,
     webPreferences: {
       preload: getPreloadPath(),

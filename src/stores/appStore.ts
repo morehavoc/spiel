@@ -36,9 +36,21 @@ export const useAppStore = create<AppStoreState>((set) => ({
   setTranscript: (text) => set({ transcript: text }),
 
   appendTranscript: (text) =>
-    set((state) => ({
-      transcript: state.transcript + (state.transcript ? ' ' : '') + text,
-    })),
+    set((state) => {
+      // If appending just a newline, add it directly without space
+      if (text === '\n') {
+        // Remove any trailing whitespace/newline before adding the new one
+        const trimmed = state.transcript.trimEnd()
+        return { transcript: trimmed + '\n' }
+      }
+      // Strip trailing newline from incoming text (API adds them)
+      const cleanText = text.replace(/\n+$/, '')
+      // Add space between chunks if there's existing text that doesn't end with newline
+      const needsSpace = state.transcript && !state.transcript.endsWith('\n')
+      return {
+        transcript: state.transcript + (needsSpace ? ' ' : '') + cleanText,
+      }
+    }),
 
   clearTranscript: () => set({ transcript: '' }),
 
