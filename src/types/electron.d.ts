@@ -25,6 +25,7 @@ export interface AppSettings {
   minSpeechDuration: number
   languageHint: string
   aiCleanupEnabled: boolean
+  aiCleanupPrompt: string
   insertionMethod: 'paste' | 'type'
   launchAtLogin: boolean
   showInDock: boolean

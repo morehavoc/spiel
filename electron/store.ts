@@ -18,6 +18,7 @@ export interface AppSettings {
   // Transcription
   languageHint: string // ISO language code, e.g., 'en'
   aiCleanupEnabled: boolean
+  aiCleanupPrompt: string // Custom system prompt for AI cleanup
 
   // Text insertion
   insertionMethod: 'paste' | 'type'
@@ -39,6 +40,17 @@ const defaults: AppSettings = {
   minSpeechDuration: 500,
   languageHint: 'en',
   aiCleanupEnabled: false,
+  aiCleanupPrompt: `You are a text cleanup assistant. Your task is to clean up transcribed speech while preserving the original meaning and intent.
+
+Rules:
+1. Fix obvious grammar and punctuation errors
+2. Remove filler words like "um", "uh", "like", "you know", etc.
+3. Fix sentence structure if it's unclear
+4. Keep the original tone and style
+5. Don't add information that wasn't there
+6. Don't change the meaning
+7. If the text is already clean, return it as-is
+8. Return ONLY the cleaned text, no explanations`,
   insertionMethod: 'paste',
   launchAtLogin: false,
   showInDock: false,

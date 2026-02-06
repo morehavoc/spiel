@@ -198,6 +198,25 @@ export function Settings() {
               />
             </button>
           </div>
+
+          {settings.aiCleanupEnabled && (
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-300">
+                AI Cleanup Prompt
+              </label>
+              <textarea
+                value={settings.aiCleanupPrompt}
+                onChange={(e) => updateSetting('aiCleanupPrompt', e.target.value)}
+                rows={8}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white text-sm font-mono placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                placeholder="Enter the system prompt for AI cleanup..."
+              />
+              <p className="text-xs text-gray-500">
+                Customize how the AI cleans up your transcribed text. You can add custom vocabulary,
+                spelling corrections, or specific instructions for how text should be formatted.
+              </p>
+            </div>
+          )}
         </section>
 
         {/* Text Insertion Section */}

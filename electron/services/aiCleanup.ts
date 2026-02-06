@@ -21,18 +21,6 @@ export function resetClient(): void {
   openaiClient = null
 }
 
-const CLEANUP_SYSTEM_PROMPT = `You are a text cleanup assistant. Your task is to clean up transcribed speech while preserving the original meaning and intent.
-
-Rules:
-1. Fix obvious grammar and punctuation errors
-2. Remove filler words like "um", "uh", "like", "you know", etc.
-3. Fix sentence structure if it's unclear
-4. Keep the original tone and style
-5. Don't add information that wasn't there
-6. Don't change the meaning
-7. If the text is already clean, return it as-is
-8. Return ONLY the cleaned text, no explanations`
-
 export async function cleanupText(text: string): Promise<{ text: string; error?: string }> {
   // Check if AI cleanup is enabled
   const aiCleanupEnabled = getSetting('aiCleanupEnabled')
@@ -42,11 +30,12 @@ export async function cleanupText(text: string): Promise<{ text: string; error?:
 
   try {
     const client = getClient()
+    const systemPrompt = getSetting('aiCleanupPrompt')
 
     const completion = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: CLEANUP_SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: text },
       ],
       temperature: 0.3,
