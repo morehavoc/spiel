@@ -79,7 +79,7 @@ Access settings by clicking the **gear icon (⚙️)** in the recording bar, or 
 - **Hotkey**: Choose between double-tap Control, F5, or a custom shortcut
 - **Silence Duration**: How long to wait after speech before processing (default: 900ms)
 - **Language Hint**: Improve accuracy by specifying your primary language
-- **AI Cleanup**: Enable/disable grammar correction and filler word removal (runs on full transcript when you stop recording)
+- **AI Cleanup**: Enable/disable grammar correction and filler word removal (runs on full transcript when you stop recording). When enabled, you can customize the AI prompt to add domain-specific vocabulary, spelling corrections, or formatting instructions
 - **Insertion Method**: Paste (faster) or type character-by-character
 
 ## Development
