@@ -2,6 +2,9 @@
 
 A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Press a hotkey, speak naturally, and have your words transcribed and inserted into any application.
 
+<img width="918" height="598" alt="image" src="https://github.com/user-attachments/assets/5a0de69f-6f8d-4d36-b80f-99071ca5827d" />
+
+
 ## Features
 
 - **Global Hotkey**: Double-tap Control (or F5, or custom shortcut) to start/stop recording from anywhere
@@ -11,6 +14,12 @@ A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Pres
 - **Universal Text Insertion**: Automatically pastes transcribed text into any active application
 - **Floating Recording Bar**: Minimal, draggable UI showing waveform and live transcript
 - **Menu Bar App**: Runs quietly in your menu bar with quick access to settings
+
+
+
+https://github.com/user-attachments/assets/83789512-9322-44de-b519-f50aa1f0c091
+
+
 
 ## Requirements
 
