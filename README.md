@@ -4,7 +4,7 @@ A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Pres
 
 ## Features
 
-- **Global Hotkey**: Double-tap Control (or F5, or custom shortcut) to start/stop recording from anywhere
+- **Global Hotkey**: Press ⌘\\ (or F5, or custom shortcut) to start/stop recording from anywhere
 - **Real-time Transcription**: Uses OpenAI's `gpt-4o-mini-transcribe` model for accurate speech-to-text
 - **Voice Activity Detection**: Automatically detects pauses in speech to send audio for transcription
 - **AI Text Cleanup**: Optional GPT-4o-mini post-processing to fix grammar and remove filler words
@@ -17,7 +17,7 @@ A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Pres
 - macOS 10.15 or later
 - OpenAI API key with access to audio transcription
 - Microphone access permission
-- Accessibility permission (for global hotkey detection)
+- Accessibility permission (for text insertion)
 
 ## Installation
 
@@ -65,10 +65,10 @@ npm run dev
 
 ## Usage
 
-1. **Start Recording**: Double-tap the Control key (or your configured hotkey)
+1. **Start Recording**: Press **⌘\\** (Cmd+Backslash) or your configured hotkey
 2. **Speak**: Talk naturally - the app detects when you pause and sends audio for transcription
-3. **Add Line Breaks**: Press **Enter** while recording to add a new line to your transcript
-4. **Stop Recording**: Double-tap Control again to stop, apply AI cleanup (if enabled), and insert text
+3. **Stop Recording**: Press the hotkey again, or press **Enter** to stop, apply AI cleanup (if enabled), and insert text
+4. **Cancel**: Press **Escape** to cancel and discard the recording
 5. **Text Inserted**: Your transcription is automatically pasted into the previously active application
 
 ### Settings
@@ -76,7 +76,7 @@ npm run dev
 Access settings by clicking the **gear icon (⚙️)** in the recording bar, or from the menu bar icon:
 
 - **API Key**: Your OpenAI API key (stored encrypted)
-- **Hotkey**: Choose between double-tap Control, F5, or a custom shortcut
+- **Hotkey**: Choose between ⌘\\ (Cmd+Backslash), F5, or a custom shortcut
 - **Silence Duration**: How long to wait after speech before processing (default: 900ms)
 - **Language Hint**: Improve accuracy by specifying your primary language
 - **AI Cleanup**: Enable/disable grammar correction and filler word removal (runs on full transcript when you stop recording). When enabled, you can customize the AI prompt to add domain-specific vocabulary, spelling corrections, or formatting instructions

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Spiel is a macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Users press a hotkey, speak naturally, see real-time transcription with optional AI cleanup, and have text automatically inserted into any active application.
 
-**Status**: Design phase - `design.md` contains the full specification, no implementation yet.
+**Status**: Implemented and functional.
 
 ## Build Commands
 
@@ -24,7 +24,7 @@ Output: `release/` directory with `.dmg` installer
 
 ### Electron IPC Pattern
 
-- **Main process** (`electron/main.ts`): Handles system-level tasks (global hotkeys via `uiohook-napi`, clipboard, window management, API calls)
+- **Main process** (`electron/main.ts`): Handles system-level tasks (global hotkeys via Electron's `globalShortcut`, clipboard, window management, API calls)
 - **Renderer process** (`src/`): React 18 + Zustand for UI and state
 - **Preload bridge** (`electron/preload.ts`): Context-isolated IPC between main and renderer
 
@@ -32,7 +32,7 @@ Output: `release/` directory with `.dmg` installer
 
 | Service | Purpose |
 |---------|---------|
-| `hotkeyManager.ts` | Double-tap Control or F5 detection using `uiohook-napi` |
+| `hotkeyManager.ts` | Global hotkey (Cmd+\\, F5, or custom) via Electron's globalShortcut |
 | `audioRecorder.ts` | MediaRecorder in renderer, sends chunks to main via IPC |
 | `vadProcessor.ts` | Amplitude-based silence detection (~900ms threshold) |
 | `whisperApi.ts` | OpenAI Whisper API client |
@@ -57,7 +57,6 @@ Renderer → Main: recording:toggle, settings:get, settings:set, audio:chunk
 
 ## Dependencies
 
-- `uiohook-napi` for low-level global hotkey detection
 - `robotjs` for simulating keyboard (Cmd+V paste)
 - `electron-store` for persistent settings
 - `openai` SDK for Whisper and GPT-4o-mini

@@ -77,7 +77,7 @@ export function Settings() {
 
           <div className="space-y-3">
             <label className="block text-sm font-medium text-gray-300">
-              Trigger Method
+              Trigger Shortcut
             </label>
             <select
               value={settings.hotkeyMode}
@@ -86,10 +86,13 @@ export function Settings() {
               }
               className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="double-tap-control">Double-tap Control</option>
-              <option value="f5">Double-tap F5</option>
+              <option value="cmd-backslash">⌘\ (Cmd+Backslash)</option>
+              <option value="f5">F5 (may need Fn key)</option>
               <option value="custom">Custom Shortcut</option>
             </select>
+            <p className="text-xs text-gray-500">
+              Press the shortcut to start recording, press again (or Enter) to stop and insert. Press Escape to cancel.
+            </p>
 
             {settings.hotkeyMode === 'custom' && (
               <div className="space-y-2">
@@ -105,26 +108,6 @@ export function Settings() {
                 />
                 <p className="text-xs text-gray-500">
                   Use Electron accelerator format (e.g., CommandOrControl+Shift+D)
-                </p>
-              </div>
-            )}
-
-            {(settings.hotkeyMode === 'double-tap-control' || settings.hotkeyMode === 'f5') && (
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-300">
-                  Double-tap Threshold: {settings.doubleTapThreshold}ms
-                </label>
-                <input
-                  type="range"
-                  min="150"
-                  max="500"
-                  step="50"
-                  value={settings.doubleTapThreshold}
-                  onChange={(e) => updateSetting('doubleTapThreshold', parseInt(e.target.value))}
-                  className="w-full"
-                />
-                <p className="text-xs text-gray-500">
-                  Time window to detect a double-tap
                 </p>
               </div>
             )}

@@ -18,9 +18,8 @@ export interface WaveformDataPayload {
 
 export interface AppSettings {
   apiKey: string
-  hotkeyMode: 'double-tap-control' | 'f5' | 'custom'
+  hotkeyMode: 'cmd-backslash' | 'f5' | 'custom'
   customHotkey: string
-  doubleTapThreshold: number
   silenceDuration: number
   minSpeechDuration: number
   languageHint: string

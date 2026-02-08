@@ -216,9 +216,9 @@ app.whenReady().then(async () => {
   // Start hotkey listener (recording bar window will be created on first use)
   hotkeyManager.start()
 
-  hotkeyManager.on('accessibility-error', (error) => {
-    console.error('Accessibility permission required:', error)
-    // Could show an alert prompting user to grant accessibility permissions
+  hotkeyManager.on('hotkey-error', (error) => {
+    console.error('Failed to register hotkey:', error)
+    // Could show an alert about the hotkey conflict
   })
 
   hotkeyManager.on('trigger', () => {

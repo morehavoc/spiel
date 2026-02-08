@@ -13,7 +13,6 @@ export function RecordingBar() {
     waveformData,
     setWaveformData,
     transcript,
-    appendTranscript,
     settings,
     setSettings,
     setError,
@@ -133,19 +132,26 @@ export function RecordingBar() {
     }
   }, []) // Only set up once, use ref for latest callback
 
-  // Handle Enter key to add newline to transcript
+  // Handle keyboard shortcuts: Enter to stop/insert, Escape to cancel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' && isRecording) {
         e.preventDefault()
-        console.log('Enter pressed, adding newline')
-        appendTranscript('\n')
+        console.log('Enter pressed, stopping and inserting')
+        handleToggleRef.current()
+      } else if (e.key === 'Escape' && isRecording) {
+        e.preventDefault()
+        console.log('Escape pressed, canceling')
+        stopRecording()
+        clearTranscript()
+        setRecordingState('idle')
+        window.electronAPI.hideRecordingBar()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isRecording, appendTranscript])
+  }, [isRecording, stopRecording, clearTranscript, setRecordingState])
 
   // Start recording automatically when the window is shown
   useEffect(() => {

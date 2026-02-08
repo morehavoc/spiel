@@ -1,4 +1,3 @@
-import { uIOhook, UiohookKey } from 'uiohook-napi'
 import { globalShortcut } from 'electron'
 import { EventEmitter } from 'events'
 import { getSetting } from '../store'
@@ -6,9 +5,8 @@ import { IPC_CHANNELS } from '../ipc'
 import { getRecordingBarWindow } from './windowManager'
 
 class HotkeyManager extends EventEmitter {
-  private lastControlPress = 0
-  private lastF5Press = 0
   private isListening = false
+  private currentShortcut: string | null = null
 
   constructor() {
     super()
@@ -18,75 +16,44 @@ class HotkeyManager extends EventEmitter {
     if (this.isListening) return
 
     const hotkeyMode = getSetting('hotkeyMode')
+    let shortcut: string
 
     if (hotkeyMode === 'custom') {
-      this.setupCustomHotkey()
+      shortcut = getSetting('customHotkey')
+    } else if (hotkeyMode === 'f5') {
+      shortcut = 'F5'
     } else {
-      this.setupUiohook()
+      // Default: cmd+backslash
+      shortcut = 'CommandOrControl+\\'
     }
 
+    this.registerShortcut(shortcut)
     this.isListening = true
   }
 
   stop(): void {
     if (!this.isListening) return
 
-    uIOhook.stop()
     globalShortcut.unregisterAll()
+    this.currentShortcut = null
     this.isListening = false
   }
 
-  private setupUiohook(): void {
-    uIOhook.on('keydown', (event) => {
-      const hotkeyMode = getSetting('hotkeyMode')
-      const threshold = getSetting('doubleTapThreshold')
-      const now = Date.now()
-
-      if (hotkeyMode === 'double-tap-control') {
-        // Check for Control key (left or right)
-        if (event.keycode === UiohookKey.Ctrl || event.keycode === UiohookKey.CtrlRight) {
-          if (now - this.lastControlPress < threshold) {
-            this.triggerRecording()
-            this.lastControlPress = 0 // Reset to prevent triple-tap
-          } else {
-            this.lastControlPress = now
-          }
-        }
-      } else if (hotkeyMode === 'f5') {
-        if (event.keycode === UiohookKey.F5) {
-          if (now - this.lastF5Press < threshold) {
-            this.triggerRecording()
-            this.lastF5Press = 0
-          } else {
-            this.lastF5Press = now
-          }
-        }
-      }
-    })
-
+  private registerShortcut(shortcut: string): void {
     try {
-      uIOhook.start()
-    } catch (error) {
-      console.error('Failed to start uiohook:', error)
-      // This typically means accessibility permissions are not granted
-      this.emit('accessibility-error', error)
-    }
-  }
-
-  private setupCustomHotkey(): void {
-    const customHotkey = getSetting('customHotkey')
-
-    try {
-      const registered = globalShortcut.register(customHotkey, () => {
+      const registered = globalShortcut.register(shortcut, () => {
         this.triggerRecording()
       })
 
       if (!registered) {
-        console.error('Failed to register custom hotkey:', customHotkey)
-        this.emit('hotkey-error', new Error(`Failed to register hotkey: ${customHotkey}`))
+        console.error('Failed to register hotkey:', shortcut)
+        this.emit('hotkey-error', new Error(`Failed to register hotkey: ${shortcut}`))
+      } else {
+        this.currentShortcut = shortcut
+        console.log('Registered hotkey:', shortcut)
       }
     } catch (error) {
-      console.error('Error registering custom hotkey:', error)
+      console.error('Error registering hotkey:', error)
       this.emit('hotkey-error', error)
     }
   }
@@ -109,6 +76,11 @@ class HotkeyManager extends EventEmitter {
   reloadSettings(): void {
     this.stop()
     this.start()
+  }
+
+  // Get the currently registered shortcut for display
+  getCurrentShortcut(): string | null {
+    return this.currentShortcut
   }
 }
 

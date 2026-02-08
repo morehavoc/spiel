@@ -7,9 +7,8 @@ export interface AppSettings {
   apiKey: string // Encrypted
 
   // Hotkey
-  hotkeyMode: 'double-tap-control' | 'f5' | 'custom'
+  hotkeyMode: 'cmd-backslash' | 'f5' | 'custom'
   customHotkey: string // e.g., 'CommandOrControl+Shift+D'
-  doubleTapThreshold: number // ms
 
   // Audio/VAD
   silenceDuration: number // ms, default 900
@@ -33,9 +32,8 @@ export interface AppSettings {
 
 const defaults: AppSettings = {
   apiKey: '',
-  hotkeyMode: 'double-tap-control',
+  hotkeyMode: 'cmd-backslash',
   customHotkey: 'CommandOrControl+Shift+D',
-  doubleTapThreshold: 300,
   silenceDuration: 900,
   minSpeechDuration: 500,
   languageHint: 'en',
