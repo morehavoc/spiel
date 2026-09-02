@@ -34,7 +34,10 @@ public struct Glossary: Sendable {
     /// real English word does more harm than the miss it fixes.
     public static let defaultEntries: [String: [String]] = [
         "ArcGIS": ["arc gis", "arcgis", "ark gis", "arc jis", "arc g i s"],
-        "GeoJSON": ["geo json", "geojson", "geo jason", "geo j son"],
+        // "g ojson" observed from Parakeet on 2026-09-02. Safe to alias: it is not
+        // an English word, unlike "arc just" (Apple's ArcGIS miss), which is a
+        // plausible bigram and is deliberately NOT listed.
+        "GeoJSON": ["geo json", "geojson", "geo jason", "geo j son", "g ojson", "gojson"],
         "Esri": ["esri", "ezri", "esry", "ess ri"],
         "dymaptic": ["dymaptic", "die maptic", "dymatic", "dynamaptic", "di maptic"],
         "AGOL": ["agol", "a gol", "a g o l"],

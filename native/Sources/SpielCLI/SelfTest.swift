@@ -72,6 +72,9 @@ enum SelfTest {
         expect(g.apply(to: "is it geo json?"), "is it GeoJSON?", "trailing question mark survives")
         expect(g.apply(to: "ESRI and esri and Esri"), "Esri and Esri and Esri", "case-insensitive single tokens")
         expect(g.apply(to: "open survey 123 now"), "open Survey123 now", "longest span wins")
+        // Real engine misses observed 2026-09-02 on jaws-mini.
+        expect(g.apply(to: "as G OJSON,"), "as GeoJSON,", "repairs Parakeet's 'G OJSON'")
+        expect(g.apply(to: "the Dimaptic team"), "the dymaptic team", "repairs Parakeet's 'Dimaptic'")
         expect(g.apply(to: ""), "", "empty string is safe")
         expect(g.apply(to: "   "), "   ", "whitespace is safe")
 
