@@ -13,6 +13,7 @@ func usage() -> Never {
       spiel-cli transcribe <audiofile> [--engine parakeet|apple] [--no-glossary]
       spiel-cli glossary "<text>"
       spiel-cli doctor
+      spiel-cli selftest
       spiel-cli live [--seconds N] [--engine parakeet|apple]
 
     """.data(using: .utf8)!)
@@ -36,6 +37,13 @@ let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { usage() }
 
 switch command {
+
+case "selftest":
+    let sem = DispatchSemaphore(value: 0)
+    var code: Int32 = 0
+    Task.detached { code = await SelfTest.run(); sem.signal() }
+    sem.wait()
+    exit(code)
 
 case "doctor":
     print("spiel doctor")
@@ -64,7 +72,7 @@ case "transcribe":
     let semaphore = DispatchSemaphore(value: 0)
     var exitCode: Int32 = 0
 
-    Task {
+    Task.detached {
         defer { semaphore.signal() }
         do {
             let samples = try AudioCapture.loadFile(at: url)
@@ -105,7 +113,7 @@ case "live":
     let semaphore = DispatchSemaphore(value: 0)
     var exitCode: Int32 = 0
 
-    Task {
+    Task.detached {
         defer { semaphore.signal() }
         do {
             let transcriber = makeTranscriber(args)
@@ -127,7 +135,7 @@ case "live":
             let capture = AudioCapture()
             print("listening for \(Int(seconds))s — speak now")
             try capture.start { samples in
-                Task { await session.feed(samples) }
+                Task.detached { await session.feed(samples) }
             }
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             capture.stop()

@@ -45,7 +45,11 @@ final class HotkeyManager {
     private var onTrigger: (() -> Void)?
     private var onStatusChange: ((Status) -> Void)?
 
-    private static var shared: HotkeyManager?
+    /// The Carbon event callback is a C function pointer and cannot capture context,
+    /// so it needs a static route back to the instance. Every read and write happens
+    /// on the main thread (the callback immediately hops to `DispatchQueue.main`), so
+    /// `nonisolated(unsafe)` states that invariant rather than hiding it.
+    nonisolated(unsafe) private static var shared: HotkeyManager?
 
     init() { HotkeyManager.shared = self }
 

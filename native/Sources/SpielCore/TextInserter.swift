@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import Foundation
 
 /// Puts transcribed text into whatever app the user was in.
@@ -54,7 +55,9 @@ public final class TextInserter: @unchecked Sendable {
     /// Prompts for Accessibility if not granted. Shows the system dialog.
     @discardableResult
     public static func requestAccessibilityPermission() -> Bool {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        // The literal rather than `kAXTrustedCheckOptionPrompt`, which is an
+        // imported `var` and therefore not concurrency-safe under Swift 6.
+        let key = "AXTrustedCheckOptionPrompt"
         return AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 

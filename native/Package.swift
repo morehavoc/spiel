@@ -10,12 +10,13 @@ let package = Package(
         .executable(name: "Spiel", targets: ["SpielApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.6"),
     ],
     targets: [
         .target(
             name: "SpielCore",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")],
+            linkerSettings: [.linkedFramework("Carbon")]
         ),
         .executableTarget(name: "SpielCLI", dependencies: ["SpielCore"]),
         .executableTarget(
