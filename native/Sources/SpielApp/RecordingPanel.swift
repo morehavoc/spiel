@@ -32,6 +32,15 @@ final class RecordingPanel {
         meterView?.needsDisplay = true
     }
 
+    /// Live preview: the transcript so far, sentence by sentence as segments land.
+    /// (Christopher, 2026-09-02: "show me a preview of the text in the popover as
+    /// it is transcribing".) Segments are released when the VAD closes them, so the
+    /// preview updates at the end of each phrase, not per word.
+    func setTranscript(_ text: String) {
+        meterView?.transcript = text
+        meterView?.needsDisplay = true
+    }
+
     /// Throttled on purpose — see the class comment.
     func update(level: Float) {
         guard let meterView else { return }
@@ -45,7 +54,7 @@ final class RecordingPanel {
     private func build() {
         // Bigger on purpose (was 260×54 with 18 px bars): Christopher, 2026-09-02,
         // "sure would be nice if the little blue dots were bigger… barely noticeable".
-        let width: CGFloat = 360, height: CGFloat = 84
+        let width: CGFloat = 420, height: CGFloat = 150
         let screen = NSScreen.main?.visibleFrame ?? .zero
         let rect = NSRect(
             x: screen.midX - width / 2,
@@ -73,7 +82,31 @@ final class RecordingPanel {
 }
 
 private final class MeterView: NSView {
+    /// Longest word-aligned suffix of `text` that fits `rect` at `attrs`, with a
+    /// leading ellipsis when anything was cut.
+    static func tail(_ text: String, fitting rect: NSRect, attrs: [NSAttributedString.Key: Any]) -> String {
+        let words = text.split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return text }
+        func fits(_ start: Int) -> Bool {
+            let s = (start > 0 ? "…" : "") + words[start...].joined(separator: " ")
+            let r = NSAttributedString(string: s, attributes: attrs).boundingRect(
+                with: NSSize(width: rect.width, height: 10_000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading])
+            return r.height <= rect.height
+        }
+        if fits(0) { return text }
+        var lo = 1, hi = words.count - 1
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if fits(mid) { hi = mid } else { lo = mid + 1 }
+        }
+        return "…" + words[lo...].joined(separator: " ")
+    }
+
     var statusText: String = "Listening"
+    var transcript: String = ""
+    private static let meterHeight: CGFloat = 40
+    private static let textTop: CGFloat = 62  // y where the text area ends (from bottom)
     private var levels: [Float] = Array(repeating: 0, count: 36)
 
     func push(_ level: Float) {
@@ -92,7 +125,24 @@ private final class MeterView: NSView {
         ]
         statusText.draw(at: NSPoint(x: 14, y: bounds.height - 22), withAttributes: attrs)
 
-        let barsRect = NSRect(x: 14, y: 10, width: bounds.width - 28, height: 46)
+        // Transcript preview under the meter: tail of the text, wrapped, newest at the
+        // bottom. Only the last few lines fit, so trim from the front by whole words.
+        let textRect = NSRect(x: 14, y: 8, width: bounds.width - 28, height: Self.textTop - 8)
+        let textAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor(calibratedWhite: 0.95, alpha: 1),
+        ]
+        let shown = transcript.isEmpty ? "…" : Self.tail(transcript, fitting: textRect, attrs: textAttrs)
+        let para = NSMutableParagraphStyle(); para.lineBreakMode = .byWordWrapping
+        var attrs2 = textAttrs; attrs2[.paragraphStyle] = para
+        let str = NSAttributedString(string: shown, attributes: attrs2)
+        let h = min(str.boundingRect(with: NSSize(width: textRect.width, height: 10_000),
+                                     options: [.usesLineFragmentOrigin, .usesFontLeading]).height,
+                    textRect.height)
+        str.draw(with: NSRect(x: textRect.minX, y: textRect.maxY - h, width: textRect.width, height: h),
+                 options: [.usesLineFragmentOrigin, .usesFontLeading])
+
+        let barsRect = NSRect(x: 14, y: Self.textTop + 6, width: bounds.width - 28, height: Self.meterHeight)
         let barWidth = barsRect.width / CGFloat(levels.count) - 3
         NSColor(calibratedRed: 0.35, green: 0.78, blue: 0.98, alpha: 1).setFill()
         for (i, level) in levels.enumerated() {

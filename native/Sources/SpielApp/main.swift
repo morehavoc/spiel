@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What the last dictation did, in one line. Lives in the menu because the menu
     /// is the only surface the user actually opens when "nothing happened".
     private var lastOutcome: String?
+    /// Running transcript for the panel preview; reset on every start.
+    private var previewText = ""
     private var accessibilityPoll: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -161,7 +163,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setStatus("Listening…")
         case .segmentCaptured:
             panel.setStatus("Transcribing…")
-        case .textReleased:
+        case .textReleased(let t):
+            previewText = previewText.isEmpty ? t : previewText + " " + t
+            panel.setTranscript(TranscriptAssembler.tidy(previewText))
             panel.setStatus("Listening…")
         case .error(let e):
             lastError = e
@@ -247,6 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         phase = .recording
+        previewText = ""
+        panel.setTranscript("")
         panel.show(status: "Listening…")
         updateStatusItem()
     }
