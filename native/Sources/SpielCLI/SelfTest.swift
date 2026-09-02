@@ -284,6 +284,35 @@ enum SelfTest {
         expect(g.apply(to: ""), "", "empty string is safe")
         expect(g.apply(to: "   "), "   ", "whitespace is safe")
 
+        expect(g.apply(to: "I said ArcJS not arc js"), "I said ArcGIS not ArcGIS", "repairs Parakeet's 'ArcJS' (2026-09-02)")
+
+        print("\nVocabulary file — user-editable, merged over built-ins")
+        let parsed = Glossary.parse("""
+        # comment line
+
+        ArcGIS: arc gis, arcjs
+        Roscoe
+        Kumquat : kum kwat,  cumquat ,
+        bad line with no term:
+        """)
+        expect(parsed["ArcGIS"]?.joined(separator: "|") ?? "nil", "arc gis|arcjs", "colon + comma list parses")
+        expect(parsed["Roscoe"] == [] ? "ok" : "\(String(describing: parsed["Roscoe"]))", "ok", "a bare word adds a term with no aliases")
+        expect(parsed["Kumquat"]?.joined(separator: "|") ?? "nil", "kum kwat|cumquat", "whitespace and trailing commas are tolerated")
+        expectInt(parsed.count, 4, "comments and blank lines are skipped; 'bad line with no term' is a term with no aliases")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-vocab-\(UUID().uuidString).txt")
+        try? "Roscoe: rosco, ross co\nArcGIS: arc jazz\n".write(to: tmp, atomically: true, encoding: .utf8)
+        let merged = Glossary.load(userFile: tmp)
+        expect(merged.apply(to: "tell rosco about arc jazz and geo json"), "tell Roscoe about ArcGIS and GeoJSON",
+               "user aliases merge over the built-ins")
+        expect(Glossary.load(userFile: URL(fileURLWithPath: "/nonexistent/vocab.txt")).count == Glossary().count ? "ok" : "differs", "ok",
+               "a missing user file means built-ins only, no error")
+        let tmpl = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-vocab-tmpl-\(UUID().uuidString).txt")
+        Glossary.ensureUserFile(at: tmpl)
+        let roundTrip = Glossary.parse((try? String(contentsOf: tmpl, encoding: .utf8)) ?? "")
+        expect(Glossary(entries: roundTrip).count == Glossary().count ? "ok" : "\(Glossary(entries: roundTrip).count) vs \(Glossary().count)", "ok",
+               "the generated template round-trips to exactly the built-in glossary")
+        try? FileManager.default.removeItem(at: tmp); try? FileManager.default.removeItem(at: tmpl)
+
         // The whole reason this is token-based and not a regex over prose.
         // Substring matching would turn "scarcity" into "scARcGISty".
         for word in ["scarcity", "flagol", "whispered", "esrious", "jawsome"] {

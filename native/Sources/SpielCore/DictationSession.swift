@@ -115,7 +115,7 @@ public actor DictationSession {
 
     private let config: Config
     private let transcriber: any Transcriber
-    private let glossary: Glossary
+    private var glossary: Glossary
     private let assembler = TranscriptAssembler()
 
     /// Nonisolated so the audio thread can push into it without a Task or an actor hop.
@@ -192,6 +192,9 @@ public actor DictationSession {
             }
         }
     }
+
+    /// Swap the vocabulary (re-read from the user file at each start).
+    public func setGlossary(_ g: Glossary) { glossary = g }
 
     public func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         eventHandler = handler

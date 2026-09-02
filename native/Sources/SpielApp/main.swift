@@ -208,9 +208,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             micDenied()
             return
         }
+        // Re-read the vocabulary file so an edit takes effect on the next dictation.
+        let glossary = Glossary.load()
+        Task { await session.setGlossary(glossary) }
         // Capture the target app BEFORE our panel appears.
         inserter.captureFrontmostApp()
-        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(TextInserter.isSecureInputEnabled())")
+        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(TextInserter.isSecureInputEnabled()), vocabulary = \(glossary.count) aliases")
         // reset() re-arms the audio path and must complete BEFORE the mic starts
         // submitting, or the first buffers land in a disarmed sink. It is awaited,
         // not blocked on: the main actor stays free (menu, hotkey, UI), and a press
@@ -373,6 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Last dictation: \(lastOutcome ?? "none yet")", action: nil, keyEquivalent: "")
+        let vocabItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
+        vocabItem.target = self
+        menu.addItem(vocabItem)
         let logItem = NSMenuItem(title: "Open Log…", action: #selector(openLog), keyEquivalent: "")
         logItem.target = self
         menu.addItem(logItem)
@@ -409,6 +415,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return nil
+    }
+
+    @objc private func editVocabulary() {
+        let url = Glossary.ensureUserFile()
+        DiagnosticLog.write("opening vocabulary file \(url.path)")
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func openLog() {

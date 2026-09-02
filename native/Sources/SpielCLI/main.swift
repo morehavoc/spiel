@@ -56,14 +56,15 @@ case "doctor":
     print("  Secure Input active    : \(secure)\(secure ? " — held by \(TextInserter.secureInputHolder() ?? "unknown")" : "")")
     print("  Microphone permission  : \(AudioCapture.microphoneAuthorization().rawValue)")
     print("  Default input device   : \(AudioCapture.defaultInputDeviceName())")
-    print("  Glossary terms         : \(Glossary().count) aliases")
+    print("  Glossary terms         : \(Glossary.load().count) aliases (built-in \(Glossary().count))")
+    print("  Vocabulary file        : \(Glossary.userFileURL.path)\(FileManager.default.fileExists(atPath: Glossary.userFileURL.path) ? "" : " (not created yet — Edit Vocabulary… in the app menu)")")
     print("  App log                : \(DiagnosticLog.url.path)")
     exit(0)
 
 case "glossary":
     guard args.count > 1 else { usage() }
     let input = args[1]
-    print(Glossary().apply(to: input))
+    print(Glossary.load().apply(to: input))
     exit(0)
 
 case "transcribe":

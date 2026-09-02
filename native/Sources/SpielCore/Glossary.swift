@@ -33,7 +33,8 @@ public struct Glossary: Sendable {
     /// mis-transcriptions, not every possible one -- an alias that collides with a
     /// real English word does more harm than the miss it fixes.
     public static let defaultEntries: [String: [String]] = [
-        "ArcGIS": ["arc gis", "arcgis", "ark gis", "arc jis", "arc g i s"],
+        // "ArcJS" observed from Parakeet on 2026-09-02 (Christopher said ArcGIS).
+        "ArcGIS": ["arc gis", "arcgis", "ark gis", "arc jis", "arc g i s", "arcjs", "arc js", "arc j s", "arc js"],
         // "g ojson" observed from Parakeet on 2026-09-02. Safe to alias: it is not
         // an English word, unlike "arc just" (Apple's ArcGIS miss), which is a
         // plausible bigram and is deliberately NOT listed.
@@ -54,6 +55,82 @@ public struct Glossary: Sendable {
         "Tailscale": ["tail scale", "tailscale"],
         "Ollama": ["olama", "ollama", "oh lama"],
     ]
+
+    // MARK: - User-editable vocabulary file
+    //
+    // Christopher, 2026-09-02: "how do I edit the special words that the model can
+    // use to understand things like GeoJSON or ArcGIS or Esri?" The list above is
+    // compiled in; this file is his. Format, one term per line:
+    //
+    //     # comment
+    //     ArcGIS: arc gis, arcjs, ark gis
+    //     dymaptic: die maptic, dymatic
+    //
+    // Left of the colon is the spelling you want; right of it, comma-separated, the
+    // ways the engine tends to hear it. A line with no colon adds the word with no
+    // aliases (still fixes capitalisation). User entries are merged over the
+    // built-ins, and a user alias wins if both define it.
+
+    public static let userFileURL: URL = {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Spiel", isDirectory: true)
+        return dir.appendingPathComponent("vocabulary.txt")
+    }()
+
+    /// Parses the file format above. Never throws on bad lines — a typo in the
+    /// vocabulary must not take dictation down; the line is skipped.
+    public static func parse(_ text: String) -> [String: [String]] {
+        var entries: [String: [String]] = [:]
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let canonical = parts[0].trimmingCharacters(in: .whitespaces)
+            guard !canonical.isEmpty else { continue }
+            let aliases = parts.count > 1
+                ? parts[1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                : []
+            entries[canonical, default: []].append(contentsOf: aliases)
+        }
+        return entries
+    }
+
+    /// Built-ins merged with the user file (user wins on conflicts). Missing or
+    /// unreadable file → built-ins only.
+    public static func load(userFile: URL = userFileURL) -> Glossary {
+        var entries = defaultEntries
+        if let text = try? String(contentsOf: userFile, encoding: .utf8) {
+            for (canonical, aliases) in parse(text) {
+                entries[canonical, default: []].append(contentsOf: aliases)
+            }
+        }
+        return Glossary(entries: entries)
+    }
+
+    /// Renders entries in the file format (sorted, so the template is stable).
+    public static func render(_ entries: [String: [String]]) -> String {
+        entries.keys.sorted { $0.lowercased() < $1.lowercased() }
+            .map { k in entries[k]!.isEmpty ? k : "\(k): \(entries[k]!.joined(separator: ", "))" }
+            .joined(separator: "\n") + "\n"
+    }
+
+    /// Creates the user file from the built-ins on first use, so there is something
+    /// to edit and the format is self-explanatory. Returns the URL.
+    @discardableResult
+    public static func ensureUserFile(at url: URL = userFileURL) -> URL {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return url }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let header = """
+        # Spiel vocabulary — one term per line.
+        #   Spelling you want: how the engine hears it, another way, ...
+        # Matching is whole-word and case-insensitive. Avoid aliases that are real
+        # English words (e.g. "arc just") — they would rewrite normal sentences.
+        # Edit, save, and the next dictation picks it up. Delete this file to reset.
+
+        """
+        try? (header + render(defaultEntries)).write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
 
     static func normalize(_ s: String) -> String {
         s.lowercased().filter { $0.isLetter || $0.isNumber }
