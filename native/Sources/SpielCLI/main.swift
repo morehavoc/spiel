@@ -128,14 +128,15 @@ case "live":
                     print("  [segment \(i): \(String(format: "%.2f", s))s]")
                 case .textReleased(let t): print("  > \(t)")
                 case .error(let e): print("  ! \(e)")
-                case .levels: break
                 }
             }
 
             let capture = AudioCapture()
             print("listening for \(Int(seconds))s — speak now")
+            // Synchronous, ordered handoff — NOT `Task { await feed(...) }`, whose
+            // execution order is not guaranteed and would shuffle mic buffers.
             try capture.start { samples in
-                Task.detached { await session.feed(samples) }
+                session.sink.submit(samples)
             }
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             capture.stop()

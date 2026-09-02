@@ -13,6 +13,10 @@ enum SelfTest {
     nonisolated(unsafe) static var failures = 0
     nonisolated(unsafe) static var checks = 0
 
+    static func expectInt(_ actual: Int, _ expected: Int, _ label: String) {
+        expect(String(actual), String(expected), label)
+    }
+
     static func expect(_ actual: String, _ expected: String, _ label: String) {
         checks += 1
         if actual == expected {
@@ -83,6 +87,21 @@ enum SelfTest {
         for word in ["scarcity", "flagol", "whispered", "esrious", "jawsome"] {
             expect(g.apply(to: word), word, "does not corrupt '\(word)'")
         }
+
+        print("\nVAD framing — Silero needs whole 4096-sample frames")
+        // VadManager.chunkSize is 4096 and processChunk pads anything shorter by
+        // repeating the last sample. AVAudioEngine taps at 1024 frames of the DEVICE
+        // rate, which is ~341 samples once resampled to 16 kHz — so forwarding tap
+        // buffers straight through fed Silero ~8% real audio and ~92% constant fill.
+        expectInt(DictationSession.vadFrameSamples, 4096, "frame size matches VadManager.chunkSize")
+        expect(String(format: "%.3f", DictationSession.vadFrameSeconds), "0.256",
+               "frame is 256ms at 16kHz")
+        // A realistic tap buffer must NOT be a whole frame — this is the trap.
+        let typicalTap = 341
+        expect(typicalTap >= DictationSession.vadFrameSamples ? "whole" : "partial", "partial",
+               "a typical 16kHz tap buffer is smaller than one VAD frame")
+        expectInt(DictationSession.vadFrameSamples / typicalTap, 12,
+                  "~12 tap buffers accumulate into one VAD frame")
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

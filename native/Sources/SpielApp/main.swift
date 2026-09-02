@@ -84,8 +84,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setStatus("Listening…")
         case .error(let e):
             lastError = e
-        case .levels:
-            break
         }
     }
 
@@ -110,7 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try capture.start { [weak self] samples in
                 guard let self else { return }
-                Task { await session.feed(samples) }
+                // Synchronous, ordered handoff — see AudioSink. A Task per buffer
+                // has no ordering guarantee and would shuffle mic audio.
+                session.sink.submit(samples)
                 // Cheap RMS for the meter; the real VAD is Silero inside the session.
                 var sum: Float = 0
                 for s in samples { sum += s * s }
