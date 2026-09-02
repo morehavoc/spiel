@@ -21,6 +21,39 @@ public final class AudioCapture: @unchecked Sendable {
 
     public init() {}
 
+    // MARK: - Microphone permission and device identity
+    //
+    // Both exist because the first test build asked for the mic on the FIRST HOTKEY
+    // PRESS: the TCC prompt appeared, the engine was already running, and that whole
+    // dictation was spent staring at a dialog. Ask at launch instead, and be able to
+    // say WHICH device we are listening to, because "the dots don't move" on a Mac
+    // with several inputs is usually the wrong device, not a broken app.
+
+    public enum MicrophoneAuthorization: String, Sendable {
+        case authorized, denied, restricted, notDetermined
+    }
+
+    public static func microphoneAuthorization() -> MicrophoneAuthorization {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return .authorized
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
+        }
+    }
+
+    /// Shows the system prompt if the state is `notDetermined`; otherwise returns the
+    /// existing decision immediately.
+    public static func requestMicrophoneAccess() async -> Bool {
+        await AVCaptureDevice.requestAccess(for: .audio)
+    }
+
+    /// The system default input, as the user would see it in System Settings → Sound.
+    public static func defaultInputDeviceName() -> String {
+        AVCaptureDevice.default(for: .audio)?.localizedName ?? "(no input device)"
+    }
+
     public enum CaptureError: Error, CustomStringConvertible {
         case formatUnavailable
         case engineFailed(String)

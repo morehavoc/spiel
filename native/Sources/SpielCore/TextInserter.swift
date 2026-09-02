@@ -68,6 +68,55 @@ public final class TextInserter: @unchecked Sendable {
         IsSecureEventInputEnabled()
     }
 
+    /// Which process holds Secure Input, if the kernel will tell us. macOS records
+    /// the holder as `kCGSSessionSecureInputPID` in the IORegistry; there is no
+    /// public API, so this shells out to `ioreg` and parses it. Only called when
+    /// Secure Input is already known to be on (menu open, or an insert just failed),
+    /// so the ~50 ms cost is never on the hot path.
+    ///
+    /// Returns e.g. "Terminal (pid 4812)", or nil if it cannot be determined. Usual
+    /// culprits: Terminal/iTerm with "Secure Keyboard Entry" on, a focused password
+    /// field in a browser, a password manager, or loginwindow after the screen was
+    /// unlocked (that one is a macOS bug and clears on lock/unlock).
+    public static func secureInputHolder() -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+        task.arguments = ["-l", "-w", "0"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do { try task.run() } catch { return nil }
+        // Bounded: a wedged ioreg must not hang whoever asked.
+        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: killer)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        killer.cancel()
+        guard task.terminationStatus == 0, let out = String(data: data, encoding: .utf8) else { return nil }
+        // Line looks like:  "kCGSSessionSecureInputPID"=4812
+        guard let range = out.range(of: "\"kCGSSessionSecureInputPID\"=") else { return nil }
+        let tail = out[range.upperBound...].prefix(while: { $0.isNumber })
+        guard let pid = Int32(tail) else { return nil }
+        let name = NSRunningApplication(processIdentifier: pid)?.localizedName
+            ?? processName(pid: pid)
+            ?? "unknown process"
+        return "\(name) (pid \(pid))"
+    }
+
+    private static func processName(pid: Int32) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-p", "\(pid)", "-o", "comm="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do { try task.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return s.isEmpty ? nil : (s as NSString).lastPathComponent
+    }
+
     @discardableResult
     public func insert(_ text: String) -> Outcome {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -81,11 +130,13 @@ public final class TextInserter: @unchecked Sendable {
         }
 
         if Self.isSecureInputEnabled() {
-            // Leave the text on the pasteboard so the work is not lost, and say why.
+            // Leave the text on the pasteboard so the work is not lost, and say why —
+            // including WHO is holding Secure Input, because that is the fix.
             setPasteboard(text)
+            let holder = Self.secureInputHolder().map { " Held by \($0)." } ?? ""
             return Outcome(
                 method: .failed,
-                detail: "macOS Secure Input is active, so synthetic paste is blocked. "
+                detail: "macOS Secure Input is active, so synthetic paste is blocked.\(holder) "
                       + "Your text is on the clipboard -- press Cmd+V."
             )
         }

@@ -14,7 +14,9 @@ func usage() -> Never {
       spiel-cli glossary "<text>"
       spiel-cli doctor
       spiel-cli selftest
-      spiel-cli live [--seconds N] [--engine parakeet|apple]
+      spiel-cli live [--seconds N] [--rounds N] [--engine parakeet|apple]
+          --rounds runs N consecutive dictations on ONE session, which is what the
+          app does across hotkey presses. Round 2 is the one that used to go deaf.
 
     """.data(using: .utf8)!)
     exit(2)
@@ -50,8 +52,12 @@ case "doctor":
     print("  macOS                  : \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("  SpeechAnalyzer (26+)   : \(AppleSpeechTranscriber.isAvailable ? "available" : "NOT available")")
     print("  Accessibility granted  : \(TextInserter.hasAccessibilityPermission())")
-    print("  Secure Input active    : \(TextInserter.isSecureInputEnabled())")
+    let secure = TextInserter.isSecureInputEnabled()
+    print("  Secure Input active    : \(secure)\(secure ? " — held by \(TextInserter.secureInputHolder() ?? "unknown")" : "")")
+    print("  Microphone permission  : \(AudioCapture.microphoneAuthorization().rawValue)")
+    print("  Default input device   : \(AudioCapture.defaultInputDeviceName())")
     print("  Glossary terms         : \(Glossary().count) aliases")
+    print("  App log                : \(DiagnosticLog.url.path)")
     exit(0)
 
 case "glossary":
@@ -110,6 +116,7 @@ case "transcribe":
 
 case "live":
     let seconds = Double(arg("--seconds", in: args) ?? "6") ?? 6
+    let rounds = Int(arg("--rounds", in: args) ?? "1") ?? 1
     let semaphore = DispatchSemaphore(value: 0)
     var exitCode: Int32 = 0
 
@@ -120,6 +127,7 @@ case "live":
             let session = DictationSession(transcriber: transcriber)
             print("preparing \(transcriber.kind.rawValue) + Silero VAD…")
             try await session.prepare()
+            print("microphone permission: \(AudioCapture.microphoneAuthorization().rawValue); input: \(AudioCapture.defaultInputDeviceName())")
 
             await session.setEventHandler { event in
                 switch event {
@@ -131,17 +139,24 @@ case "live":
                 }
             }
 
-            let capture = AudioCapture()
-            print("listening for \(Int(seconds))s — speak now")
-            // Synchronous, ordered handoff — NOT `Task { await feed(...) }`, whose
-            // execution order is not guaranteed and would shuffle mic buffers.
-            try capture.start { samples in
-                session.sink.submit(samples)
+            for round in 1...max(rounds, 1) {
+                // Same sequence as the app: reset (re-arm) → start mic → stop → finish.
+                await session.reset()
+                let capture = AudioCapture()
+                print("\nround \(round)/\(rounds): listening for \(Int(seconds))s — speak now")
+                // Synchronous, ordered handoff — NOT `Task { await feed(...) }`, whose
+                // execution order is not guaranteed and would shuffle mic buffers.
+                try capture.start { samples in
+                    session.sink.submit(samples)
+                }
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                capture.stop()
+                let report = await session.finishWithReport()
+                print("  audio \(String(format: "%.2f", report.audioSeconds))s, peak \(String(format: "%.3f", report.peak)), segments \(report.segments), dropped buffers \(report.droppedBuffers)")
+                print("  diagnosis: \(report.diagnosis)")
+                print("  TRANSCRIPT: \(report.text.isEmpty ? "(nothing captured)" : report.text)")
+                if report.droppedBuffers > 0 { exitCode = 3 }
             }
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            capture.stop()
-            let text = await session.finish()
-            print("\nTRANSCRIPT: \(text.isEmpty ? "(nothing captured)" : text)")
         } catch {
             FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
             exitCode = 1

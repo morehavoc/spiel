@@ -58,6 +58,61 @@ public actor DictationSession {
         case error(String)
     }
 
+    /// What one dictation actually did — so an empty transcript can be told apart
+    /// from "the microphone delivered silence", "audio arrived but nothing was
+    /// judged speech", and "speech was transcribed to nothing". Those are three
+    /// different problems with three different fixes, and the first build reported
+    /// all of them as a blank.
+    public struct Report: Sendable {
+        public var text: String = ""
+        /// Audio that reached the session, in seconds at 16 kHz.
+        public var audioSeconds: Double = 0
+        /// Largest absolute sample seen. ~0 means the mic (or its permission) gave us nothing.
+        public var peak: Float = 0
+        /// Number of segments the VAD closed and handed to the engine.
+        public var segments: Int = 0
+        /// Buffers the audio thread submitted while no stream was armed. Must be 0.
+        public var droppedBuffers: Int = 0
+        public var errors: [String] = []
+
+        public init() {}
+
+        /// One-line human diagnosis. Written for the menu bar, where this is the
+        /// only thing the user will see when nothing was inserted.
+        public var diagnosis: String {
+            let secs = String(format: "%.1fs", audioSeconds)
+            // Problems first, always — a non-empty transcript must not hide that part
+            // of the audio was dropped or part of the speech failed to transcribe.
+            var warnings: [String] = []
+            if droppedBuffers > 0 {
+                warnings.append("BUG: \(droppedBuffers) audio buffer\(droppedBuffers == 1 ? "" : "s") dropped before reaching the session")
+            }
+            if !errors.isEmpty {
+                warnings.append("\(errors.count) segment\(errors.count == 1 ? "" : "s") failed: \(errors.joined(separator: "; "))")
+            }
+            if !text.isEmpty {
+                let summary = "\(secs), \(segments) segment\(segments == 1 ? "" : "s"), \(text.split(separator: " ").count) words"
+                return warnings.isEmpty ? summary : "PARTIAL — " + warnings.joined(separator: "; ") + " — " + summary
+            }
+            if droppedBuffers > 0 && audioSeconds == 0 {
+                return warnings[0]
+            }
+            if audioSeconds == 0 {
+                return "no audio reached the session — the microphone delivered nothing"
+            }
+            if peak < 0.005 {
+                return "\(secs) of near-silence (peak \(String(format: "%.4f", peak))) — the mic is muted, the wrong input device is selected, or microphone permission is missing"
+            }
+            if segments == 0 {
+                return "\(secs) of audio (peak \(String(format: "%.2f", peak))) but no speech detected — too quiet, or too short"
+            }
+            if !errors.isEmpty {
+                return "\(segments) segment\(segments == 1 ? "" : "s") captured, engine failed: \(errors.joined(separator: "; "))"
+            }
+            return "\(segments) segment\(segments == 1 ? "" : "s") captured (peak \(String(format: "%.2f", peak))) but the engine returned no words"
+        }
+    }
+
     private let config: Config
     private let transcriber: any Transcriber
     private let glossary: Glossary
@@ -67,8 +122,19 @@ public actor DictationSession {
     public nonisolated let sink = AudioSink()
     private var consumer: Task<Void, Never>?
 
-    private var vad: VadManager?
-    private var vadState: VadStreamState?
+    private var vad: (any VoiceActivityDetector)?
+    private let injectedVAD: (any VoiceActivityDetector)?
+
+    /// The in-flight `finishWithReport()`, so a `reset()` that arrives while it is
+    /// suspended (a fast second hotkey press) waits for it instead of interleaving —
+    /// actors are reentrant, and a reset that re-armed mid-finish would then have its
+    /// consumer nil'd by the older finish resuming.
+    private var finishInFlight: Task<Report, Never>?
+
+    private var receivedSamples = 0
+    private var peak: Float = 0
+    private var segmentsClosed = 0
+    private var errors: [String] = []
 
     /// Samples received but not yet forming a whole VAD frame.
     private var pending: [Float] = []
@@ -81,31 +147,45 @@ public actor DictationSession {
     private var inFlight: [Task<Void, Never>] = []
     private var eventHandler: (@Sendable (Event) -> Void)?
 
+    /// `vad` is injectable so the whole pipeline can run under `selftest` with a
+    /// deterministic detector. Production passes nil and gets Silero.
     public init(
         transcriber: any Transcriber,
         glossary: Glossary = Glossary(),
-        config: Config = Config()
+        config: Config = Config(),
+        vad: (any VoiceActivityDetector)? = nil
     ) {
         self.transcriber = transcriber
         self.glossary = glossary
         self.config = config
+        self.injectedVAD = vad
     }
 
     public func prepare() async throws {
         try await transcriber.prepare()
         // Silero VAD — a real model, not the amplitude threshold v1 used. An amplitude
         // gate fires on a door slam and misses a quiet sentence.
-        vad = try await VadManager()
-        vadState = await vad?.makeStreamState()
-        startConsumer()
+        if let injectedVAD {
+            vad = injectedVAD
+        } else {
+            vad = try await SileroVAD()
+        }
+        armForDictation()
     }
 
-    /// Exactly ONE consumer drains the sink, sequentially. Nothing else calls
-    /// `processFrame`, so a VAD `await` can never interleave two frames and read a
-    /// stale `vadState` or append samples out of capture order.
-    private func startConsumer() {
-        guard consumer == nil else { return }
-        let stream = sink.stream
+    /// True while a consumer is draining an armed stream — i.e. audio submitted now
+    /// will actually be processed.
+    public var isArmed: Bool { consumer != nil && sink.isArmed }
+
+    /// Arms a fresh stream and exactly ONE consumer to drain it, sequentially.
+    /// Nothing else calls `processFrame`, so a VAD `await` can never interleave two
+    /// frames and read stale VAD state or append samples out of capture order.
+    ///
+    /// Called from `prepare()` and again from every `reset()` — the stream is
+    /// one-shot (see `AudioSink`), so a session that only armed once went deaf after
+    /// its first `finish()`.
+    private func armForDictation() {
+        let stream = sink.rearm()
         consumer = Task { [weak self] in
             for await chunk in stream {
                 await self?.ingest(chunk)
@@ -117,7 +197,14 @@ public actor DictationSession {
         eventHandler = handler
     }
 
+    /// Start of a dictation. Clears every per-dictation state AND re-arms the audio
+    /// path — a session is reusable across dictations only because this re-arms.
     public func reset() async {
+        // 1. Let a finish that is still running complete — never interleave with it.
+        if let f = finishInFlight { _ = await f.value }
+        // 2. Drain whatever the OLD consumer still had queued BEFORE clearing state,
+        //    so stale audio cannot be ingested into the new dictation's counters.
+        if consumer != nil { sink.finish(); await consumer?.value; consumer = nil }
         for t in inFlight { t.cancel() }
         inFlight.removeAll()
         await assembler.reset()
@@ -128,12 +215,20 @@ public actor DictationSession {
         silenceRun = 0
         speechRun = 0
         nextIndex = 0
-        vadState = await vad?.makeStreamState()
+        receivedSamples = 0
+        peak = 0
+        segmentsClosed = 0
+        errors.removeAll()
+        await vad?.reset()
         if let p = transcriber as? ParakeetTranscriber { await p.resetContext() }
+        // 3. Only now arm a fresh stream.
+        armForDictation()
     }
 
     /// Accumulate into whole Silero frames, then process them one at a time.
     private func ingest(_ samples: [Float]) async {
+        receivedSamples += samples.count
+        for s in samples { let a = abs(s); if a > peak { peak = a } }
         pending.append(contentsOf: samples)
         while pending.count >= Self.vadFrameSamples {
             let frame = Array(pending.prefix(Self.vadFrameSamples))
@@ -143,16 +238,11 @@ public actor DictationSession {
     }
 
     private func processFrame(_ frame: [Float]) async {
-        guard let vad, let state = vadState else { return }
+        guard let vad else { return }
 
         var probability: Float = 0
         do {
-            let result = try await vad.processStreamingChunk(
-                frame, state: state, config: .default,
-                returnSeconds: false, timeResolution: 2
-            )
-            vadState = result.state
-            probability = result.probability
+            probability = try await vad.probability(of: frame)
         } catch {
             // A VAD failure must not kill dictation. Treat the audio as speech —
             // over-capturing is recoverable, dropping the user's words is not.
@@ -206,11 +296,12 @@ public actor DictationSession {
 
         let index = nextIndex
         nextIndex += 1
+        segmentsClosed += 1
         eventHandler?(.segmentCaptured(
             index: index, seconds: Double(audio.count) / AudioCapture.sampleRate
         ))
 
-        let task = Task { [transcriber, assembler, glossary, eventHandler] in
+        let task = Task { [weak self, transcriber, assembler, glossary, eventHandler] in
             do {
                 let raw = try await transcriber.transcribe(samples: audio)
                 let released = await assembler.accept(
@@ -225,17 +316,35 @@ public actor DictationSession {
                 _ = await assembler.accept(
                     TranscriptSegment(index: index, text: "", isFinal: true)
                 )
+                await self?.recordError("segment \(index): \(error)")
                 eventHandler?(.error("segment \(index): \(error)"))
             }
         }
         inFlight.append(task)
     }
 
+    private func recordError(_ e: String) { errors.append(e) }
+
     /// Ends dictation and returns the finished, glossary-corrected transcript.
+    public func finish() async -> String {
+        await finishWithReport().text
+    }
+
+    /// Ends dictation and returns the transcript plus what happened on the way.
     ///
     /// Order matters: close the sink, drain the consumer, THEN flush the tail — so
-    /// audio still queued in the stream is not thrown away.
-    public func finish() async -> String {
+    /// audio still queued in the stream is not thrown away. After this the session
+    /// is DISARMED until the next `reset()`; submits in between are counted, not lost.
+    public func finishWithReport() async -> Report {
+        if let f = finishInFlight { return await f.value }
+        let task = Task { await self.finishBody() }
+        finishInFlight = task
+        let report = await task.value
+        finishInFlight = nil
+        return report
+    }
+
+    private func finishBody() async -> Report {
         sink.finish()
         await consumer?.value
         consumer = nil
@@ -260,7 +369,15 @@ public actor DictationSession {
         inFlight.removeAll()
         _ = await assembler.flush()
         let text = await assembler.text()
-        return glossary.apply(to: text)
+
+        var report = Report()
+        report.text = glossary.apply(to: text)
+        report.audioSeconds = Double(receivedSamples) / AudioCapture.sampleRate
+        report.peak = peak
+        report.segments = segmentsClosed
+        report.droppedBuffers = sink.droppedBuffers
+        report.errors = errors
+        return report
     }
 
     /// One-shot: transcribe a fixed buffer with no VAD. Used by the CLI for
