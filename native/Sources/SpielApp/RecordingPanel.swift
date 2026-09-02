@@ -43,7 +43,9 @@ final class RecordingPanel {
     }
 
     private func build() {
-        let width: CGFloat = 260, height: CGFloat = 54
+        // Bigger on purpose (was 260×54 with 18 px bars): Christopher, 2026-09-02,
+        // "sure would be nice if the little blue dots were bigger… barely noticeable".
+        let width: CGFloat = 360, height: CGFloat = 84
         let screen = NSScreen.main?.visibleFrame ?? .zero
         let rect = NSRect(
             x: screen.midX - width / 2,
@@ -72,7 +74,7 @@ final class RecordingPanel {
 
 private final class MeterView: NSView {
     var statusText: String = "Listening"
-    private var levels: [Float] = Array(repeating: 0, count: 28)
+    private var levels: [Float] = Array(repeating: 0, count: 36)
 
     func push(_ level: Float) {
         levels.removeFirst()
@@ -85,16 +87,16 @@ private final class MeterView: NSView {
         bg.fill()
 
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor(calibratedWhite: 0.75, alpha: 1),
         ]
-        statusText.draw(at: NSPoint(x: 14, y: bounds.height - 20), withAttributes: attrs)
+        statusText.draw(at: NSPoint(x: 14, y: bounds.height - 22), withAttributes: attrs)
 
-        let barsRect = NSRect(x: 14, y: 10, width: bounds.width - 28, height: 18)
-        let barWidth = barsRect.width / CGFloat(levels.count) - 2
+        let barsRect = NSRect(x: 14, y: 10, width: bounds.width - 28, height: 46)
+        let barWidth = barsRect.width / CGFloat(levels.count) - 3
         NSColor(calibratedRed: 0.35, green: 0.78, blue: 0.98, alpha: 1).setFill()
         for (i, level) in levels.enumerated() {
-            let h = max(2, CGFloat(level) * barsRect.height)
+            let h = max(4, CGFloat(level) * barsRect.height)
             let x = barsRect.minX + CGFloat(i) * (barWidth + 2)
             let bar = NSRect(x: x, y: barsRect.minY + (barsRect.height - h) / 2, width: barWidth, height: h)
             NSBezierPath(roundedRect: bar, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()

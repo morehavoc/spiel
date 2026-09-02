@@ -231,11 +231,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var sum: Float = 0
                 for s in samples { sum += s * s }
                 let rms = (samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot())
-                // dB-ish mapping so a laptop mic at conversational level fills the
-                // meter: -50 dBFS -> 0, -30 dBFS -> 0.5, -10 dBFS -> 1. Linear rms*6
-                // barely moved on a MacBook Pro Microphone (2026-09-02).
+                // dB mapping tuned to a laptop mic at conversational distance:
+                // -48 dBFS -> empty, -18 dBFS -> full. The first mapping (-50..-10)
+                // put normal speech at ~40% and Christopher asked for more motion.
                 let db = 20 * log10(max(rms, 1e-6))
-                let level = min(max((db + 50) / 40, 0), 1)
+                let level = min(max((db + 48) / 30, 0), 1)
                 Task { @MainActor in self.panel.update(level: level) }
             }
         } catch {

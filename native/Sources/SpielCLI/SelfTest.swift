@@ -253,6 +253,12 @@ enum SelfTest {
             expect(await a.text(), "Okay. Let's see.", "flush also drops punctuation-only segments")
             let b = TranscriptAssembler()
             expect(await b.accept(.init(index: 0, text: "3", isFinal: true)), "3", "a digit is real text, not noise")
+            // Doubled punctuation INSIDE a segment (engine fired on a pause).
+            let c = TranscriptAssembler()
+            _ = await c.accept(.init(index: 0, text: "talking to it. . Uh sure", isFinal: true))
+            expect(await c.text(), "talking to it. Uh sure", "'it. . Uh' inside one segment collapses to one period")
+            expect(TranscriptAssembler.tidy("wait . what"), "wait . what", "a lone '.' after a word without punctuation is left alone")
+            expect(TranscriptAssembler.tidy("really? ! yes"), "really? yes", "'? !' collapses to the first mark")
         }
 
         // A permanently missing segment must not silently eat the rest.

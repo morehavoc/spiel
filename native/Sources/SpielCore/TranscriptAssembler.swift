@@ -40,7 +40,23 @@ public actor TranscriptAssembler {
 
     /// Full transcript so far, in speech order.
     public func text() -> String {
-        emitted.joined(separator: " ")
+        Self.tidy(emitted.joined(separator: " "))
+    }
+
+    /// Collapses punctuation the engine doubles across a pause — "to it. . Uh" —
+    /// into a single mark. Token-level, not regex-over-prose: only a standalone
+    /// punctuation token directly after a token that already ends in punctuation
+    /// is removed.
+    public static func tidy(_ s: String) -> String {
+        var out: [Substring] = []
+        for tok in s.split(separator: " ", omittingEmptySubsequences: true) {
+            if isNoise(String(tok)), let last = out.last, let end = last.last,
+               [".", ",", "!", "?", ";", ":"].contains(end) {
+                continue
+            }
+            out.append(tok)
+        }
+        return out.joined(separator: " ")
     }
 
     /// Release anything still held back by a gap. Called when recording stops so a
