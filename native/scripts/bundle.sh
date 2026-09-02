@@ -46,9 +46,30 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature. Not notarized — first launch still needs a right-click > Open,
-# or Privacy & Security > "Open Anyway".
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
+# Signing identity matters for TCC, not just Gatekeeper. macOS keys an Accessibility /
+# Microphone grant on the app's designated requirement. An AD-HOC signature has no
+# certificate, so the requirement pins the code hash — which changes on EVERY rebuild,
+# and the grant Christopher gave build 2 showed "ON" in System Settings while
+# AXIsProcessTrusted() returned false for build 3 (2026-09-02). A self-signed
+# certificate gives a stable requirement (`identifier "com.morehavoc.spiel" and
+# certificate root = H"…"`), so the grant survives rebuilds. It is still not notarized:
+# first launch still needs the xattr step or "Open Anyway".
+#
+# Identity: "Spiel Dev Signing" in ~/Library/Keychains/spiel-signing.keychain-db on
+# jaws-mini (self-signed, 10-year, created 2026-09-02). Falls back to ad-hoc with a
+# loud warning if the keychain is missing, because a silent fallback would reintroduce
+# the rotating-identity bug while looking identical.
+SIGN_KEYCHAIN="$HOME/Library/Keychains/spiel-signing.keychain-db"
+SIGN_ID="Spiel Dev Signing"
+if [ -f "$SIGN_KEYCHAIN" ] && security find-certificate -c "$SIGN_ID" "$SIGN_KEYCHAIN" >/dev/null 2>&1; then
+  security unlock-keychain -p spielkc "$SIGN_KEYCHAIN" 2>/dev/null || true
+  codesign --force --deep --sign "$SIGN_ID" --keychain "$SIGN_KEYCHAIN" "$APP"
+  echo "==> signed with '$SIGN_ID' (stable TCC identity)"
+else
+  echo "WARNING: '$SIGN_ID' not found — signing AD-HOC. Accessibility grants will NOT survive rebuilds." >&2
+  codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
+fi
+codesign -d -r- "$APP" 2>&1 | grep designated
 
 echo "==> built $APP"
 echo "    open it with:  open '$APP'"

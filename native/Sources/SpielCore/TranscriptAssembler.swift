@@ -15,12 +15,19 @@ public actor TranscriptAssembler {
 
     /// Returns any newly contiguous text, in order. Empty if this segment arrived
     /// early and is still waiting on a gap ahead of it.
+    /// A segment with no letters or digits — Parakeet answers a breath or a
+    /// keyboard click with a bare "." — is noise, not text. Joining those with
+    /// spaces produced "Okay. . Let's see" in the 2026-09-02 test.
+    static func isNoise(_ s: String) -> Bool {
+        s.unicodeScalars.allSatisfy { !CharacterSet.alphanumerics.contains($0) }
+    }
+
     @discardableResult
     public func accept(_ segment: TranscriptSegment) -> String {
         pending[segment.index] = segment.text
         var released = ""
         while let next = pending.removeValue(forKey: nextToEmit) {
-            let trimmed = next.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = Self.isNoise(next) ? "" : next.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 if !released.isEmpty { released += " " }
                 released += trimmed
@@ -41,7 +48,8 @@ public actor TranscriptAssembler {
     public func flush() -> String {
         var released = ""
         for key in pending.keys.sorted() {
-            let trimmed = (pending[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = pending[key] ?? ""
+            let trimmed = Self.isNoise(raw) ? "" : raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 if !released.isEmpty { released += " " }
                 released += trimmed

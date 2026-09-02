@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if !TextInserter.hasAccessibilityPermission() {
-            DiagnosticLog.write("accessibility not granted at launch — prompting")
+            DiagnosticLog.write("accessibility NOT effective at launch — prompting. If System Settings already shows Spiel ON, that grant belongs to a differently-signed build: remove it and re-add. Signature: \(Self.signatureSummary())")
             TextInserter.requestAccessibilityPermission()
             startAccessibilityPoll()
         }
@@ -80,6 +80,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Warm the model at launch, not on first keypress. A cold Parakeet load is
         // seconds; paying it while the user is already talking is the worst moment.
         Task { await self.warmUp() }
+    }
+
+    /// What TCC keys the grant on. Ad-hoc builds change identity on every rebuild,
+    /// which is why a grant that shows ON can still be ineffective.
+    static func signatureSummary() -> String {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        task.arguments = ["-d", "-r-", Bundle.main.bundlePath]
+        let pipe = Pipe()
+        task.standardError = pipe
+        task.standardOutput = pipe
+        do { try task.run() } catch { return "unknown" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        let out = String(data: data, encoding: .utf8) ?? ""
+        let line = out.split(separator: "\n").first { $0.contains("designated =>") }
+        return line.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "no designated requirement (unsigned?)"
     }
 
     /// Accessibility grants do not notify the app; the first build needed a restart
@@ -214,7 +231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var sum: Float = 0
                 for s in samples { sum += s * s }
                 let rms = (samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot())
-                Task { @MainActor in self.panel.update(level: min(rms * 6, 1)) }
+                // dB-ish mapping so a laptop mic at conversational level fills the
+                // meter: -50 dBFS -> 0, -30 dBFS -> 0.5, -10 dBFS -> 1. Linear rms*6
+                // barely moved on a MacBook Pro Microphone (2026-09-02).
+                let db = 20 * log10(max(rms, 1e-6))
+                let level = min(max((db + 50) / 40, 0), 1)
+                Task { @MainActor in self.panel.update(level: level) }
             }
         } catch {
             DiagnosticLog.write("microphone failed to start: \(error)")
@@ -333,10 +355,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          action: nil, keyEquivalent: "")
         }
         if !TextInserter.hasAccessibilityPermission() {
-            let item = NSMenuItem(title: "⚠︎ Grant Accessibility…",
+            let item = NSMenuItem(title: "⚠︎ Accessibility NOT effective — click to prompt",
                                   action: #selector(grantAccessibility), keyEquivalent: "")
             item.target = self
             menu.addItem(item)
+            menu.addItem(withTitle: "    If Spiel is already ON in that list, remove it (−) and re-add — the entry belongs to an older build",
+                         action: nil, keyEquivalent: "")
         }
         if let lastError {
             menu.addItem(withTitle: "Last error: \(lastError)", action: nil, keyEquivalent: "")

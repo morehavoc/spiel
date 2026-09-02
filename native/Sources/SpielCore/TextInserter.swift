@@ -117,10 +117,28 @@ public final class TextInserter: @unchecked Sendable {
         return s.isEmpty ? nil : (s as NSString).lastPathComponent
     }
 
+    /// `accessibilityTrusted` is injectable for the selftest; production reads
+    /// `AXIsProcessTrusted()`.
     @discardableResult
-    public func insert(_ text: String) -> Outcome {
+    public func insert(_ text: String, accessibilityTrusted: Bool = AXIsProcessTrusted()) -> Outcome {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return Outcome(method: .failed, detail: "nothing to insert")
+        }
+
+        // Without Accessibility there is NO working path: the AX insert is
+        // unavailable, and macOS silently DROPS synthetic keyboard events from an
+        // untrusted process — `CGEvent.post` returns nothing, so the old code
+        // reported "inserted via paste" while nothing arrived (2026-09-02, Rambox).
+        // Leave the text on the clipboard and say exactly that.
+        guard accessibilityTrusted else {
+            setPasteboard(text)
+            return Outcome(
+                method: .failed,
+                detail: "Accessibility is not granted to this build, so macOS dropped the paste keystroke. "
+                      + "Your text is on the clipboard -- press Cmd+V. "
+                      + "If Spiel is already listed and ON in System Settings > Privacy & Security > Accessibility, "
+                      + "that entry belongs to an older build: remove it with the minus button and re-add this one."
+            )
         }
 
         refocusPreviousApp()

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SpielCore
 
@@ -240,6 +241,20 @@ enum SelfTest {
                    "an empty placeholder does not stall the gate")
         }
 
+        // Punctuation-only segments are noise, not text ("Okay. . Let's see").
+        do {
+            let a = TranscriptAssembler()
+            _ = await a.accept(.init(index: 0, text: "Okay.", isFinal: true))
+            _ = await a.accept(.init(index: 1, text: ".", isFinal: true))
+            _ = await a.accept(.init(index: 2, text: "Let's see.", isFinal: true))
+            expect(await a.text(), "Okay. Let's see.", "a bare '.' segment is dropped, not joined")
+            _ = await a.accept(.init(index: 4, text: "…", isFinal: true))
+            _ = await a.flush()
+            expect(await a.text(), "Okay. Let's see.", "flush also drops punctuation-only segments")
+            let b = TranscriptAssembler()
+            expect(await b.accept(.init(index: 0, text: "3", isFinal: true)), "3", "a digit is real text, not noise")
+        }
+
         // A permanently missing segment must not silently eat the rest.
         do {
             let a = TranscriptAssembler()
@@ -267,6 +282,20 @@ enum SelfTest {
         // Substring matching would turn "scarcity" into "scARcGISty".
         for word in ["scarcity", "flagol", "whispered", "esrious", "jawsome"] {
             expect(g.apply(to: word), word, "does not corrupt '\(word)'")
+        }
+
+        print("\nTextInserter — no Accessibility means no delivery, and it must say so")
+        do {
+            let ins = TextInserter()
+            let out = ins.insert("hello from selftest", accessibilityTrusted: false)
+            expect(out.success ? "success" : "failed", "failed",
+                   "without Accessibility the insert reports FAILURE, never 'inserted via paste'")
+            expect((out.detail ?? "").contains("Accessibility") ? "ok" : (out.detail ?? "nil"), "ok",
+                   "the failure names Accessibility as the reason")
+            expect((out.detail ?? "").contains("older build") ? "ok" : (out.detail ?? "nil"), "ok",
+                   "the failure explains the stale-grant case")
+            expect(NSPasteboard.general.string(forType: .string) ?? "", "hello from selftest",
+                   "the text is left on the clipboard so nothing is lost")
         }
 
         print("\nVAD framing — Silero needs whole 4096-sample frames")
