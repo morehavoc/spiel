@@ -27,12 +27,7 @@ public actor TranscriptAssembler {
         pending[segment.index] = segment.text
         var released = ""
         while let next = pending.removeValue(forKey: nextToEmit) {
-            let trimmed = Self.isNoise(next) ? "" : next.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                if !released.isEmpty { released += " " }
-                released += trimmed
-                emitted.append(trimmed)
-            }
+            release(next, into: &released)
             nextToEmit += 1
         }
         return released
@@ -64,16 +59,21 @@ public actor TranscriptAssembler {
     public func flush() -> String {
         var released = ""
         for key in pending.keys.sorted() {
-            let raw = pending[key] ?? ""
-            let trimmed = Self.isNoise(raw) ? "" : raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                if !released.isEmpty { released += " " }
-                released += trimmed
-                emitted.append(trimmed)
-            }
+            release(pending[key] ?? "", into: &released)
         }
         pending.removeAll()
         return released
+    }
+
+    /// Trims a segment, drops it if it is noise, and appends it to both the
+    /// caller's released string and the running transcript. Shared by `accept`
+    /// and `flush` so the two can never disagree about what counts as text.
+    private func release(_ raw: String, into released: inout String) {
+        let trimmed = Self.isNoise(raw) ? "" : raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if !released.isEmpty { released += " " }
+        released += trimmed
+        emitted.append(trimmed)
     }
 
     public func reset() {

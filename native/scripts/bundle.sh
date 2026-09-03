@@ -62,7 +62,14 @@ PLIST
 SIGN_KEYCHAIN="$HOME/Library/Keychains/spiel-signing.keychain-db"
 SIGN_ID="Spiel Dev Signing"
 if [ -f "$SIGN_KEYCHAIN" ] && security find-certificate -c "$SIGN_ID" "$SIGN_KEYCHAIN" >/dev/null 2>&1; then
-  security unlock-keychain -p spielkc "$SIGN_KEYCHAIN" 2>/dev/null || true
+  # Password comes from the environment; never hardcode it here. If it is unset we
+  # try signing anyway — an unlocked keychain works fine, and a locked one fails
+  # loudly at codesign rather than silently falling back to ad-hoc.
+  if [ -n "${SPIEL_SIGN_KEYCHAIN_PASSWORD:-}" ]; then
+    security unlock-keychain -p "$SPIEL_SIGN_KEYCHAIN_PASSWORD" "$SIGN_KEYCHAIN" 2>/dev/null || true
+  else
+    echo "NOTE: SPIEL_SIGN_KEYCHAIN_PASSWORD unset — assuming '$SIGN_KEYCHAIN' is already unlocked." >&2
+  fi
   codesign --force --deep --sign "$SIGN_ID" --keychain "$SIGN_KEYCHAIN" "$APP"
   echo "==> signed with '$SIGN_ID' (stable TCC identity)"
 else

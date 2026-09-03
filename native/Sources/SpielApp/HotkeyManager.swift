@@ -69,13 +69,9 @@ final class HotkeyManager {
         )
         let installErr = InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, event, _ -> OSStatus in
-                var hkID = EventHotKeyID()
-                GetEventParameter(
-                    event, EventParamName(kEventParamDirectObject),
-                    EventParamType(typeEventHotKeyID), nil,
-                    MemoryLayout<EventHotKeyID>.size, nil, &hkID
-                )
+            { _, _, _ -> OSStatus in
+                // Only one hotkey is ever registered, so the event's EventHotKeyID
+                // carries no information worth reading back.
                 DispatchQueue.main.async { HotkeyManager.shared?.onTrigger?() }
                 return noErr
             },

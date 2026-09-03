@@ -19,6 +19,9 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
     public let kind: TranscriberKind = .appleSpeech
     private let localeIdentifier: String
     private var prepared = false
+    /// Resolved once in `prepare()`; `supportedLocale` is an async lookup and the
+    /// answer cannot change while the process runs.
+    private var resolvedLocale: Locale?
 
     public init(localeIdentifier: String = "en-US") {
         self.localeIdentifier = localeIdentifier
@@ -38,6 +41,7 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
         guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw TranscriberError.unavailable("locale \(localeIdentifier) not supported by SpeechTranscriber")
         }
+        resolvedLocale = supported
         let module = SpeechTranscriber(locale: supported, preset: .progressiveTranscription)
 
         // The model is NOT preinstalled. Ask the OS to fetch it and wait, otherwise
@@ -62,9 +66,8 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
         guard prepared else { throw TranscriberError.notPrepared("call prepare() first") }
         guard !samples.isEmpty else { return "" }
 
-        let locale = Locale(identifier: localeIdentifier)
-        guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
-            throw TranscriberError.unavailable("locale \(localeIdentifier) not supported")
+        guard let supported = resolvedLocale else {
+            throw TranscriberError.notPrepared("locale not resolved; call prepare() first")
         }
         let module = SpeechTranscriber(locale: supported, preset: .transcription)
 

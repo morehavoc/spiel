@@ -10,33 +10,10 @@ import Foundation
 public struct TranscriptSegment: Sendable, Equatable {
     public let index: Int
     public let text: String
-    public let isFinal: Bool
 
-    public init(index: Int, text: String, isFinal: Bool) {
+    public init(index: Int, text: String) {
         self.index = index
         self.text = text
-        self.isFinal = isFinal
-    }
-}
-
-public struct TranscriptionTiming: Sendable {
-    public let audioSeconds: Double
-    public let wallSeconds: Double
-    public var realtimeFactor: Double {
-        wallSeconds > 0 ? audioSeconds / wallSeconds : 0
-    }
-    public init(audioSeconds: Double, wallSeconds: Double) {
-        self.audioSeconds = audioSeconds
-        self.wallSeconds = wallSeconds
-    }
-}
-
-public struct TranscriptionResult: Sendable {
-    public let text: String
-    public let timing: TranscriptionTiming
-    public init(text: String, timing: TranscriptionTiming) {
-        self.text = text
-        self.timing = timing
     }
 }
 

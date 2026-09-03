@@ -119,16 +119,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func warmUp() async {
-        let transcriber = ParakeetTranscriber()
+    /// Builds a prepared session wired to the event handler. Both the primary and
+    /// the fallback engine need exactly this; having it written twice is how the
+    /// two paths drift apart.
+    private func makeSession(_ transcriber: Transcriber) async throws -> DictationSession {
         let s = DictationSession(transcriber: transcriber)
+        try await s.prepare()
+        await s.setEventHandler { [weak self] event in
+            Task { @MainActor in self?.handle(event) }
+        }
+        return s
+    }
+
+    private func warmUp() async {
         let t0 = Date()
         do {
-            try await s.prepare()
-            await s.setEventHandler { [weak self] event in
-                Task { @MainActor in self?.handle(event) }
-            }
-            self.session = s
+            self.session = try await makeSession(ParakeetTranscriber())
             self.engineReady = true
             self.lastError = nil
             DiagnosticLog.write("engine ready: parakeet (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
@@ -137,14 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Fall back to Apple's on-device engine rather than dying. Parakeet needs
             // a HuggingFace download on first run; no network on first launch should
             // degrade the app, not brick it.
-            let fallback = AppleSpeechTranscriber()
-            let s2 = DictationSession(transcriber: fallback)
             do {
-                try await s2.prepare()
-                await s2.setEventHandler { [weak self] event in
-                    Task { @MainActor in self?.handle(event) }
-                }
-                self.session = s2
+                self.session = try await makeSession(AppleSpeechTranscriber())
                 self.engineReady = true
                 self.lastError = "Parakeet unavailable, using Apple SpeechAnalyzer"
                 DiagnosticLog.write("engine ready: apple SpeechAnalyzer (fallback)")

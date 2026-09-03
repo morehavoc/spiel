@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **v2 lives in `native/` and is a different app.** Branch `v2-native` holds a native
+> Swift menu-bar rewrite with **fully local** transcription (Parakeet TDT on the Neural
+> Engine via FluidAudio, Apple `SpeechAnalyzer` as fallback) — no OpenAI, no network,
+> no API key. Everything below this line describes the **Electron/Whisper v1** app in
+> `electron/` and `src/`, which is untouched by v2. For v2 see `native/README.md`; its
+> test harness is `spiel-cli selftest`, not `npm test`.
+
 ## Project Overview
 
 Spiel is a macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Users press a hotkey, speak naturally, see real-time transcription with optional AI cleanup, and have text automatically inserted into any active application.

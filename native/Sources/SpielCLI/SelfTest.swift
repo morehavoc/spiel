@@ -220,42 +220,42 @@ enum SelfTest {
         // segment and a fast second one swapped two sentences.
         do {
             let a = TranscriptAssembler()
-            let early = await a.accept(.init(index: 1, text: "second sentence", isFinal: true))
+            let early = await a.accept(.init(index: 1, text: "second sentence"))
             expect(early, "", "index 1 is held until index 0 arrives")
-            let released = await a.accept(.init(index: 0, text: "first sentence", isFinal: true))
+            let released = await a.accept(.init(index: 0, text: "first sentence"))
             expect(released, "first sentence second sentence", "out-of-order arrival reassembles in speech order")
             expect(await a.text(), "first sentence second sentence", "full transcript is in speech order")
         }
 
         do {
             let a = TranscriptAssembler()
-            expect(await a.accept(.init(index: 0, text: "one", isFinal: true)), "one", "contiguous index 0 releases immediately")
-            expect(await a.accept(.init(index: 1, text: "two", isFinal: true)), "two", "contiguous index 1 releases immediately")
+            expect(await a.accept(.init(index: 0, text: "one")), "one", "contiguous index 0 releases immediately")
+            expect(await a.accept(.init(index: 1, text: "two")), "two", "contiguous index 1 releases immediately")
         }
 
         // A failed segment must not swallow everything spoken after it.
         do {
             let a = TranscriptAssembler()
-            _ = await a.accept(.init(index: 1, text: "kept", isFinal: true))
-            expect(await a.accept(.init(index: 0, text: "", isFinal: true)), "kept",
+            _ = await a.accept(.init(index: 1, text: "kept"))
+            expect(await a.accept(.init(index: 0, text: "")), "kept",
                    "an empty placeholder does not stall the gate")
         }
 
         // Punctuation-only segments are noise, not text ("Okay. . Let's see").
         do {
             let a = TranscriptAssembler()
-            _ = await a.accept(.init(index: 0, text: "Okay.", isFinal: true))
-            _ = await a.accept(.init(index: 1, text: ".", isFinal: true))
-            _ = await a.accept(.init(index: 2, text: "Let's see.", isFinal: true))
+            _ = await a.accept(.init(index: 0, text: "Okay."))
+            _ = await a.accept(.init(index: 1, text: "."))
+            _ = await a.accept(.init(index: 2, text: "Let's see."))
             expect(await a.text(), "Okay. Let's see.", "a bare '.' segment is dropped, not joined")
-            _ = await a.accept(.init(index: 4, text: "…", isFinal: true))
+            _ = await a.accept(.init(index: 4, text: "…"))
             _ = await a.flush()
             expect(await a.text(), "Okay. Let's see.", "flush also drops punctuation-only segments")
             let b = TranscriptAssembler()
-            expect(await b.accept(.init(index: 0, text: "3", isFinal: true)), "3", "a digit is real text, not noise")
+            expect(await b.accept(.init(index: 0, text: "3")), "3", "a digit is real text, not noise")
             // Doubled punctuation INSIDE a segment (engine fired on a pause).
             let c = TranscriptAssembler()
-            _ = await c.accept(.init(index: 0, text: "talking to it. . Uh sure", isFinal: true))
+            _ = await c.accept(.init(index: 0, text: "talking to it. . Uh sure"))
             expect(await c.text(), "talking to it. Uh sure", "'it. . Uh' inside one segment collapses to one period")
             expect(TranscriptAssembler.tidy("wait . what"), "wait . what", "a lone '.' after a word without punctuation is left alone")
             expect(TranscriptAssembler.tidy("really? ! yes"), "really? yes", "'? !' collapses to the first mark")
@@ -264,7 +264,7 @@ enum SelfTest {
         // A permanently missing segment must not silently eat the rest.
         do {
             let a = TranscriptAssembler()
-            _ = await a.accept(.init(index: 3, text: "orphan", isFinal: true))
+            _ = await a.accept(.init(index: 3, text: "orphan"))
             expect(await a.text(), "", "orphan is held back before flush")
             _ = await a.flush()
             expect(await a.text(), "orphan", "flush releases orphans")

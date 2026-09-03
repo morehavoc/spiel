@@ -308,7 +308,7 @@ public actor DictationSession {
             do {
                 let raw = try await transcriber.transcribe(samples: audio)
                 let released = await assembler.accept(
-                    TranscriptSegment(index: index, text: raw, isFinal: true)
+                    TranscriptSegment(index: index, text: raw)
                 )
                 if !released.isEmpty {
                     eventHandler?(.textReleased(glossary.apply(to: released)))
@@ -317,7 +317,7 @@ public actor DictationSession {
                 // Emit an empty segment so the assembler's ordering gate does not stall
                 // on a hole and swallow everything spoken after it.
                 _ = await assembler.accept(
-                    TranscriptSegment(index: index, text: "", isFinal: true)
+                    TranscriptSegment(index: index, text: "")
                 )
                 await self?.recordError("segment \(index): \(error)")
                 eventHandler?(.error("segment \(index): \(error)"))
@@ -327,11 +327,6 @@ public actor DictationSession {
     }
 
     private func recordError(_ e: String) { errors.append(e) }
-
-    /// Ends dictation and returns the finished, glossary-corrected transcript.
-    public func finish() async -> String {
-        await finishWithReport().text
-    }
 
     /// Ends dictation and returns the transcript plus what happened on the way.
     ///
@@ -383,10 +378,4 @@ public actor DictationSession {
         return report
     }
 
-    /// One-shot: transcribe a fixed buffer with no VAD. Used by the CLI for
-    /// file-based verification.
-    public func transcribeWhole(_ samples: [Float]) async throws -> String {
-        let raw = try await transcriber.transcribe(samples: samples)
-        return glossary.apply(to: raw)
-    }
 }

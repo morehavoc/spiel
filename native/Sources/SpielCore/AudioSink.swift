@@ -25,7 +25,6 @@ import Foundation
 public final class AudioSink: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: AsyncStream<[Float]>.Continuation?
-    private var current: AsyncStream<[Float]>?
     private var _droppedBuffers = 0
 
     public init() {}
@@ -51,7 +50,6 @@ public final class AudioSink: @unchecked Sendable {
         // .unbounded: dropping mic audio under back-pressure would silently lose words.
         let stream = AsyncStream<[Float]>(bufferingPolicy: .unbounded) { cont = $0 }
         continuation = cont
-        current = stream
         _droppedBuffers = 0
         return stream
     }
@@ -74,6 +72,5 @@ public final class AudioSink: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         continuation?.finish()
         continuation = nil
-        current = nil
     }
 }

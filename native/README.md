@@ -34,18 +34,54 @@ native/
 ├── Package.swift
 ├── Sources/
 │   ├── SpielCore/          # engine-agnostic library
-│   │   ├── Transcriber.swift          # protocol + result types
+│   │   ├── Transcriber.swift          # protocol, TranscriptSegment, errors
 │   │   ├── ParakeetTranscriber.swift  # FluidAudio / Parakeet TDT on the ANE
 │   │   ├── AppleSpeechTranscriber.swift # macOS 26 SpeechAnalyzer
 │   │   ├── AudioCapture.swift         # AVAudioEngine → 16 kHz mono float
+│   │   ├── AudioSink.swift            # order-preserving, re-armable audio handoff
+│   │   ├── VoiceActivityDetector.swift # energy-based speech gate
 │   │   ├── DictationSession.swift     # VAD → segment → transcribe → assemble
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
 │   │   ├── Glossary.swift             # custom-vocabulary post-pass
-│   │   └── TextInserter.swift         # AX + CGEvent insertion
+│   │   ├── TextInserter.swift         # AX + CGEvent insertion
+│   │   └── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log
 │   ├── SpielCLI/           # headless harness (spiel-cli)
+│   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live
+│   │   └── SelfTest.swift             # the only test harness (no XCTest here)
 │   └── SpielApp/           # menu-bar app
+│       ├── main.swift                 # AppDelegate, menu, dictation lifecycle
+│       ├── HotkeyManager.swift        # Carbon global hotkey, failure surfaced
+│       ├── RecordingPanel.swift       # floating level-meter panel
+│       └── Notifier.swift             # user-facing notifications
 └── scripts/bundle.sh       # → build/Spiel.app
 ```
+
+The user-editable vocabulary file lives outside the repo, at
+`~/Library/Application Support/Spiel/vocabulary.txt` (menu → Edit Vocabulary…). It is
+merged over the built-in `Glossary` terms.
+
+## Building
+
+```
+swift build -c release
+.build/release/spiel-cli selftest     # 78/78 expected
+./scripts/bundle.sh release           # → build/Spiel.app
+```
+
+Two things bite on a fresh machine:
+
+- **SwiftPM's artifact downloader has hung on jaws-mini**, fetching FluidAudio's
+  binary xcframework over the network. The workaround is to point `Package.swift` at
+  the vendored copy in `vendor/FluidAudio` for the build and restore the remote URL
+  before committing — the committed manifest must keep the remote dependency.
+- **Signing uses a self-signed "Spiel Dev Signing" identity** in
+  `~/Library/Keychains/spiel-signing.keychain-db`, which gives a stable designated
+  requirement so Accessibility and Microphone grants survive rebuilds. Export
+  `SPIEL_SIGN_KEYCHAIN_PASSWORD` before running `bundle.sh` if that keychain is
+  locked. Without the identity the script signs ad-hoc and says so loudly — grants
+  then break on every rebuild.
+
+There is no XCTest target; `spiel-cli selftest` is the whole harness.
 
 ## Engine choice
 
