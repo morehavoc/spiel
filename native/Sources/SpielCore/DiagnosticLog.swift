@@ -6,13 +6,75 @@ import Foundation
 /// working", there was nothing to read: every outcome was a Notifier call that
 /// silently degraded to NSLog when notification permission had never been requested.
 /// This file is the thing to paste into the thread when something looks wrong.
+///
+/// OFF BY DEFAULT (2026-09-02, Christopher: "maybe we should have the logging off by
+/// default and the user can activate it?"). The log records every transcript
+/// verbatim, so an app that writes it unasked is keeping a plaintext diary of
+/// everything dictated. Nothing is written — not the file, not `NSLog` — until the
+/// user turns on menu → *Diagnostic Logging*. The preference persists across
+/// launches in the app's defaults domain, so it stays on once he has enabled it to
+/// debug something. Turning it on writes a state snapshot (see `AppDelegate`), so the
+/// file is useful without a restart.
 public enum DiagnosticLog {
-    public static let url: URL = {
+    /// Where the log lives. Overridable so selftest can prove the gate on a temp
+    /// file without touching the real one.
+    nonisolated(unsafe) public static var url: URL = defaultURL
+
+    public static let defaultURL: URL = {
         let logs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         return logs.appendingPathComponent("Spiel.log")
     }()
+
+    /// Defaults key. `false`/absent = off.
+    public static let enabledKey = "DiagnosticLoggingEnabled"
+    /// One domain for the app and `spiel-cli`, so `doctor` reports what the app
+    /// actually does. Inside the bundled app this IS `UserDefaults.standard`;
+    /// the CLI has no bundle identifier and would otherwise read its own empty
+    /// domain and always say "off".
+    public static let defaultsDomain = "com.morehavoc.spiel"
+    public static var defaults: UserDefaults {
+        if Bundle.main.bundleIdentifier == defaultsDomain { return .standard }
+        return UserDefaults(suiteName: defaultsDomain) ?? .standard
+    }
+
+    private static let stateLock = NSLock()
+    nonisolated(unsafe) private static var cachedEnabled: Bool?
+
+    /// Whether anything is written. Read from defaults once, then cached; a
+    /// process-local override (selftest) never touches the persisted value.
+    public static var isEnabled: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        if let c = cachedEnabled { return c }
+        let v = isEnabled(in: defaults)
+        cachedEnabled = v
+        return v
+    }
+
+    /// The persisted answer for a given domain. Absent or non-bool reads as OFF —
+    /// the default must be the quiet one.
+    public static func isEnabled(in defaults: UserDefaults) -> Bool {
+        (defaults.object(forKey: enabledKey) as? Bool) ?? false
+    }
+
+    /// `persist: false` flips the in-process gate only (selftest). `persist: true`
+    /// is the user's choice from the menu and survives relaunch.
+    public static func setEnabled(_ on: Bool, persist: Bool) {
+        stateLock.lock()
+        cachedEnabled = on
+        stateLock.unlock()
+        if persist { defaults.set(on, forKey: enabledKey) }
+    }
+
+    /// Drop the cached gate so the next read comes from defaults again (selftest).
+    public static func reloadEnabled() {
+        stateLock.lock(); cachedEnabled = nil; stateLock.unlock()
+    }
+
+    /// Wait for every queued write to land. `write` is fire-and-forget on a
+    /// serial queue; anything that stats the file right after must call this.
+    public static func flush() { queue.sync {} }
 
     private static let queue = DispatchQueue(label: "com.morehavoc.spiel.log")
     private static let stamp: DateFormatter = {
@@ -36,11 +98,18 @@ public enum DiagnosticLog {
     /// captures it — so a transcript there leaves the machine inside any diagnostic
     /// bundle sent to Apple or anyone else. Dictation is exactly the kind of text
     /// (passwords, client names, medical) that must not land in a shared log.
+    ///
+    /// When logging is OFF this is a no-op: no file is created or appended and
+    /// nothing reaches `NSLog`. The gate is read here, synchronously, so a line
+    /// queued before the user turns logging off still lands (it was permitted when
+    /// written) and the first line after they turn it on is never lost.
     public static func write(_ line: String, sensitive: Bool = false) {
+        guard isEnabled else { return }
         let text = "[\(stamp.string(from: Date()))] \(line)\n"
         queue.async {
             guard let data = text.data(using: .utf8) else { return }
             let fm = FileManager.default
+            let url = self.url
             if let size = (try? fm.attributesOfItem(atPath: url.path)[.size]) as? Int,
                size >= rotateAtBytes {
                 let old = url.deletingPathExtension().appendingPathExtension("log.1")

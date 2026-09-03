@@ -395,13 +395,54 @@ enum SelfTest {
             // The dictated transcript is the sensitive asset in this app. These pin
             // the three places it can escape: the shared system log, the log file's
             // permissions, and the global pasteboard.
-            let logURL = DiagnosticLog.url
+            // Logging is OFF by default and nothing is written until the user turns
+            // it on. Proven on a temp file so the real Spiel.log — and the user's
+            // persisted preference — are never touched.
+            let freshDomain = "com.morehavoc.spiel.selftest-\(UUID().uuidString)"
+            if let fresh = UserDefaults(suiteName: freshDomain) {
+                expect(DiagnosticLog.isEnabled(in: fresh) ? "on" : "off", "off",
+                       "a never-configured install has logging OFF")
+                fresh.set("yes", forKey: DiagnosticLog.enabledKey)
+                expect(DiagnosticLog.isEnabled(in: fresh) ? "on" : "off", "off",
+                       "a non-bool preference value still reads as OFF, never on")
+                fresh.set(true, forKey: DiagnosticLog.enabledKey)
+                expect(DiagnosticLog.isEnabled(in: fresh) ? "on" : "off", "on",
+                       "the persisted preference turns logging on")
+                fresh.removePersistentDomain(forName: freshDomain)
+            } else {
+                expect("no suite", "suite", "could create a throwaway defaults domain")
+            }
+
+            let realURL = DiagnosticLog.url
+            let persistedBefore = DiagnosticLog.defaults.object(forKey: DiagnosticLog.enabledKey) as? Bool
+            let tmpLog = FileManager.default.temporaryDirectory
+                .appendingPathComponent("spiel-selftest-\(UUID().uuidString).log")
+            DiagnosticLog.url = tmpLog
+            defer {
+                DiagnosticLog.flush()
+                DiagnosticLog.url = realURL
+                DiagnosticLog.reloadEnabled()
+                try? FileManager.default.removeItem(at: tmpLog)
+                try? FileManager.default.removeItem(at: tmpLog.deletingPathExtension().appendingPathExtension("log.1"))
+            }
+            DiagnosticLog.setEnabled(false, persist: false)
+            DiagnosticLog.write("selftest: must NOT land", sensitive: true)
+            DiagnosticLog.write("selftest: must NOT land either")
+            DiagnosticLog.flush()
+            expect(FileManager.default.fileExists(atPath: tmpLog.path) ? "written" : "absent", "absent",
+                   "with logging off, write() creates no file and appends nothing")
+
+            DiagnosticLog.setEnabled(true, persist: false)
             DiagnosticLog.write("selftest permission probe")
-            // The write is queued; give it a moment to land before stat'ing.
-            usleep(300_000)
-            let perms = ((try? FileManager.default.attributesOfItem(atPath: logURL.path)[.posixPermissions]) as? NSNumber)?.intValue
+            DiagnosticLog.flush()
+            expect(FileManager.default.fileExists(atPath: tmpLog.path) ? "written" : "absent", "written",
+                   "with logging on, write() lands (the gate is not stuck closed)")
+            let perms = ((try? FileManager.default.attributesOfItem(atPath: tmpLog.path)[.posixPermissions]) as? NSNumber)?.intValue
             expect(perms.map { String($0, radix: 8) } ?? "nil", "600",
                    "Spiel.log is owner-only — it holds every transcript verbatim")
+            let persistedAfter = DiagnosticLog.defaults.object(forKey: DiagnosticLog.enabledKey) as? Bool
+            expect(persistedAfter == persistedBefore ? "untouched" : "changed", "untouched",
+                   "selftest's in-process override never rewrites the user's persisted preference")
 
             expect(TextInserter.concealedType.rawValue, "org.nspasteboard.ConcealedType",
                    "the concealed-clipboard marker is the exact UTI clipboard managers honour")

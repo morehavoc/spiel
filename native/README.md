@@ -44,7 +44,7 @@ native/
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
 │   │   ├── Glossary.swift             # custom-vocabulary post-pass
 │   │   ├── TextInserter.swift         # AX + CGEvent insertion
-│   │   └── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log
+│   │   └── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log (off by default; menu → Diagnostic Logging)
 │   ├── SpielCLI/           # headless harness (spiel-cli)
 │   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live
 │   │   └── SelfTest.swift             # the only test harness (no XCTest here)

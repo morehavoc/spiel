@@ -58,7 +58,9 @@ case "doctor":
     print("  Default input device   : \(AudioCapture.defaultInputDeviceName())")
     print("  Glossary terms         : \(Glossary.load().count) aliases (built-in \(Glossary().count))")
     print("  Vocabulary file        : \(Glossary.userFileURL.path)\(FileManager.default.fileExists(atPath: Glossary.userFileURL.path) ? "" : " (not created yet — Edit Vocabulary… in the app menu)")")
-    print("  App log                : \(DiagnosticLog.url.path)")
+    let logOn = DiagnosticLog.isEnabled
+    print("  Diagnostic logging     : \(logOn ? "ON" : "off (default) — enable with the app menu → Diagnostic Logging")")
+    print("  App log                : \(DiagnosticLog.url.path)\(FileManager.default.fileExists(atPath: DiagnosticLog.url.path) ? "" : " (not written)")")
     exit(0)
 
 case "glossary":

@@ -481,7 +481,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vocabItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
         vocabItem.target = self
         menu.addItem(vocabItem)
-        let logItem = NSMenuItem(title: "Open Log…", action: #selector(openLog), keyEquivalent: "")
+        // Off by default: the log holds every transcript verbatim, so it is only
+        // written once the user asks for it. The checkmark IS the persisted state.
+        let loggingItem = NSMenuItem(title: "Diagnostic Logging", action: #selector(toggleLogging), keyEquivalent: "")
+        loggingItem.target = self
+        loggingItem.state = DiagnosticLog.isEnabled ? .on : .off
+        menu.addItem(loggingItem)
+        let logExists = FileManager.default.fileExists(atPath: DiagnosticLog.url.path)
+        let logItem = NSMenuItem(
+            title: logExists ? "Open Log…" : "Open Log… (nothing written yet)",
+            action: logExists ? #selector(openLog) : nil, keyEquivalent: ""
+        )
         logItem.target = self
         menu.addItem(logItem)
 
@@ -527,6 +537,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openLog() {
         NSWorkspace.shared.open(DiagnosticLog.url)
+    }
+
+    /// Menu → Diagnostic Logging. Turning it ON writes a state snapshot first, so the
+    /// file is worth reading without relaunching to get the launch lines back;
+    /// turning it OFF writes one last line so the file's end explains why it stops.
+    @objc private func toggleLogging() {
+        let turningOn = !DiagnosticLog.isEnabled
+        if turningOn {
+            DiagnosticLog.setEnabled(true, persist: true)
+            DiagnosticLog.write("logging turned ON by user — state snapshot follows")
+            DiagnosticLog.write(stateSnapshot())
+        } else {
+            DiagnosticLog.write("logging turned OFF by user — nothing further will be written until it is turned on again")
+            DiagnosticLog.flush()
+            DiagnosticLog.setEnabled(false, persist: true)
+        }
+        updateStatusItem()
+    }
+
+    /// Everything the launch path would have logged, read now.
+    private func stateSnapshot() -> String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?"
+        let hotkey: String
+        switch hotkeyStatus {
+        case .registered(let d): hotkey = d
+        case .failed(let d, let why): hotkey = "\(d) NOT active — \(why)"
+        case .unregistered: hotkey = "not registered"
+        }
+        return "snapshot — Spiel \(version) pid \(ProcessInfo.processInfo.processIdentifier); "
+            + "hotkey: \(hotkey); engine: \(engineReady ? "ready" : "loading"); "
+            + "microphone: \(AudioCapture.microphoneAuthorization().rawValue), input device: \(AudioCapture.defaultInputDeviceName()); "
+            + "accessibility effective: \(TextInserter.hasAccessibilityPermission()); "
+            + "secure input: \(TextInserter.isSecureInputEnabled()); "
+            + "last outcome: \(lastOutcome ?? "none yet"); last error: \(lastError ?? "none"); "
+            + "signature: \(Self.signatureSummary())"
     }
 
     @objc private func menuToggle() { toggle() }
