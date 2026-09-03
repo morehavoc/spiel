@@ -390,6 +390,76 @@ enum SelfTest {
         expectInt(DictationSession.vadFrameSamples / typicalTap, 12,
                   "~12 tap buffers accumulate into one VAD frame")
 
+        print("\nSecurity — what leaves the process")
+        do {
+            // The dictated transcript is the sensitive asset in this app. These pin
+            // the three places it can escape: the shared system log, the log file's
+            // permissions, and the global pasteboard.
+            let logURL = DiagnosticLog.url
+            DiagnosticLog.write("selftest permission probe")
+            // The write is queued; give it a moment to land before stat'ing.
+            usleep(300_000)
+            let perms = ((try? FileManager.default.attributesOfItem(atPath: logURL.path)[.posixPermissions]) as? NSNumber)?.intValue
+            expect(perms.map { String($0, radix: 8) } ?? "nil", "600",
+                   "Spiel.log is owner-only — it holds every transcript verbatim")
+
+            expect(TextInserter.concealedType.rawValue, "org.nspasteboard.ConcealedType",
+                   "the concealed-clipboard marker is the exact UTI clipboard managers honour")
+            expect(TextInserter.pasteboardRescueTTL > 0 && TextInserter.pasteboardRescueTTL <= 300 ? "ok" : "\(TextInserter.pasteboardRescueTTL)", "ok",
+                   "a rescue transcript is taken back off the clipboard, and within 5 minutes")
+
+            // An oversized vocabulary file must degrade to built-ins, not be read.
+            let big = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-vocab-big-\(UUID().uuidString).txt")
+            let filler = String(repeating: "Padding\(UUID().uuidString): pad pad pad\n", count: 12_000)
+            try? filler.write(to: big, atomically: true, encoding: .utf8)
+            let bigSize = ((try? FileManager.default.attributesOfItem(atPath: big.path)[.size]) as? Int) ?? 0
+            expect(bigSize > Glossary.maxUserFileBytes ? "ok" : "\(bigSize)", "ok",
+                   "the oversize fixture really is over the cap (guards against a vacuous test)")
+            expect(Glossary.load(userFile: big).count == Glossary().count ? "ok" : "differs", "ok",
+                   "an oversized vocabulary file is ignored, falling back to built-ins")
+            try? FileManager.default.removeItem(at: big)
+
+            // The rescue clear must be keyed on CONTENT: take back our own transcript,
+            // never take back something he copied afterwards.
+            let pb = NSPasteboard.general
+            pb.clearContents(); pb.setString("spiel transcript fixture", forType: .string)
+            TextInserter.clearIfStillOurs("spiel transcript fixture")
+            expect(pb.string(forType: .string) ?? "nil", "nil",
+                   "the rescue clear takes our own transcript back off the clipboard")
+            pb.clearContents(); pb.setString("something he copied himself", forType: .string)
+            TextInserter.clearIfStillOurs("spiel transcript fixture")
+            expect(pb.string(forType: .string) ?? "nil", "something he copied himself",
+                   "the rescue clear NEVER eats a clipboard he wrote after us")
+
+            // Every transcript put on the global pasteboard carries the concealed
+            // marker, not just the Secure-Input one. Driven through the real
+            // no-Accessibility rescue path.
+            pb.clearContents()
+            let rescue = TextInserter()
+            _ = rescue.insert("concealment fixture", accessibilityTrusted: false)
+            expect(pb.string(forType: .string) ?? "nil", "concealment fixture",
+                   "a rescue transcript really is left on the clipboard (guards against a vacuous next check)")
+            expect(pb.types?.contains(TextInserter.concealedType) == true ? "ok" : "\(pb.types ?? [])", "ok",
+                   "every transcript on the pasteboard is marked concealed, not only under Secure Input")
+            TextInserter.clearIfStillOurs("concealment fixture")
+
+            // A FIFO stats small and reads forever; the cap must be applied to the
+            // opened descriptor, not to a path that was stat'd separately.
+            let fifo = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-vocab-fifo-\(UUID().uuidString)")
+            if mkfifo(fifo.path, 0o600) == 0 {
+                let opened = open(fifo.path, O_RDWR | O_NONBLOCK)  // keep a writer so the read side does not block
+                expect(Glossary.load(userFile: fifo).count == Glossary().count ? "ok" : "differs", "ok",
+                       "a non-regular vocabulary file (FIFO) is refused, not read")
+                if opened >= 0 { close(opened) }
+                try? FileManager.default.removeItem(at: fifo)
+            }
+
+            let longAlias = String(repeating: "a", count: Glossary.maxAliasLength + 1)
+            let capped = Glossary.parse("Term: ok alias, \(longAlias)\n")
+            expect(capped["Term"]?.joined(separator: "|") ?? "nil", "ok alias",
+                   "an absurdly long alias is dropped, a normal one survives")
+        }
+
         await pipelineTests()
 
         print("\n\(checks - failures)/\(checks) checks passed")

@@ -88,7 +88,9 @@ public struct Glossary: Sendable {
             let canonical = parts[0].trimmingCharacters(in: .whitespaces)
             guard !canonical.isEmpty else { continue }
             let aliases = parts.count > 1
-                ? parts[1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                ? parts[1].split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && $0.count <= maxAliasLength }
                 : []
             entries[canonical, default: []].append(contentsOf: aliases)
         }
@@ -97,14 +99,62 @@ public struct Glossary: Sendable {
 
     /// Built-ins merged with the user file (user wins on conflicts). Missing or
     /// unreadable file → built-ins only.
+    /// Ceiling on the user vocabulary file. It is a hand-edited plain-text list —
+    /// 256 KB is thousands of terms. The cap exists because `load()` runs on every
+    /// dictation and reads the whole file into memory: without it, anything that
+    /// lands at that path (a mis-aimed redirect, a pasted log, a symlink to a huge
+    /// file) is read in full on the hot path. Over the cap we use the built-ins and
+    /// say so, rather than failing dictation.
+    public static let maxUserFileBytes = 256 * 1024
+
+    /// Longest accepted alias. Matching is whole-word, so an alias is a word or a
+    /// short phrase; a multi-kilobyte "alias" cannot match real speech and only
+    /// costs time on every transcript.
+    public static let maxAliasLength = 120
+
     public static func load(userFile: URL = userFileURL) -> Glossary {
         var entries = defaultEntries
-        if let text = try? String(contentsOf: userFile, encoding: .utf8) {
+        if let text = readUserFile(userFile) {
             for (canonical, aliases) in parse(text) {
                 entries[canonical, default: []].append(contentsOf: aliases)
             }
         }
         return Glossary(entries: entries)
+    }
+
+    /// Reads the user vocabulary file safely, or returns nil to mean "use built-ins".
+    ///
+    /// Opens ONCE and validates the open descriptor rather than stat'ing the path and
+    /// then re-opening it. Stat-then-open is a TOCTOU: the file can be swapped in
+    /// between, and a path that stats small can be a FIFO or a character device whose
+    /// reported size says nothing — either way `String(contentsOf:)` would then read
+    /// unbounded, or block forever, on the hot path of every dictation. `fstat` on the
+    /// descriptor we are about to read is the only check that describes the thing we
+    /// actually read.
+    private static func readUserFile(_ url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var st = stat()
+        guard fstat(handle.fileDescriptor, &st) == 0 else { return nil }
+        guard (st.st_mode & S_IFMT) == S_IFREG else {
+            DiagnosticLog.write(
+                "vocabulary file is not a regular file — ignoring it and using built-in terms only"
+            )
+            return nil
+        }
+        if st.st_size > maxUserFileBytes {
+            DiagnosticLog.write(
+                "vocabulary file is \(st.st_size) bytes, over the \(maxUserFileBytes)-byte limit — "
+                    + "ignoring it and using built-in terms only"
+            )
+            return nil
+        }
+        // Bounded read even though fstat said it fits: the file can still grow between
+        // the fstat and the read, and this is the only place a user-controlled file is
+        // pulled into memory on every dictation.
+        guard let data = try? handle.read(upToCount: maxUserFileBytes) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Renders entries in the file format (sorted, so the template is stable).

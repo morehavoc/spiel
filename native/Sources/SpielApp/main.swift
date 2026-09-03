@@ -234,7 +234,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let glossary = Glossary.load()
         // Capture the target app BEFORE our panel appears.
         inserter.captureFrontmostApp()
-        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(TextInserter.isSecureInputEnabled()), vocabulary = \(glossary.count) aliases")
+        // Latch Secure Input as observed AT THE START of this dictation. Sampling it
+        // later (at log time) is not equivalent: by then `insert()` has refocused the
+        // target app and, on the failure path, spent up to 3 s shelling out to
+        // `ioreg`, and Secure Input is routinely released the moment a password field
+        // loses focus. A dictated password would then be logged verbatim because the
+        // flag had already flipped back — the guard reading as working while doing
+        // nothing.
+        let secureAtStart = TextInserter.isSecureInputEnabled()
+        secureInputSeenThisDictation = secureAtStart
+        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(secureAtStart), vocabulary = \(glossary.count) aliases")
         // reset() re-arms the audio path and must complete BEFORE the mic starts
         // submitting, or the first buffers land in a disarmed sink. It is awaited,
         // not blocked on: the main actor stays free (menu, hotkey, UI), and a press
@@ -302,6 +311,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Generous, because a 14 s segment on a cold Neural Engine is a few seconds.
     private static let finishWatchdogSeconds: UInt64 = 60
     private var finishGeneration = 0
+    /// Whether macOS Secure Input was seen on at any point during the current
+    /// dictation. Latched at `start()`, re-checked in `deliver()`, and consumed by
+    /// `quotedForLog`; see those for why a live sample at log time is wrong.
+    private var secureInputSeenThisDictation = false
 
     private func stop() {
         guard let session, phase == .recording else { return }
@@ -318,7 +331,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // session is stale: its text would be delivered into whatever he is
                 // doing now, a minute later.
                 guard self.finishGeneration == generation, self.phase == .finishing else {
-                    DiagnosticLog.write("stale finish ignored (watchdog already fired) — text was: \"\(report.text)\"")
+                    DiagnosticLog.write(
+                        "stale finish ignored (watchdog already fired) — text was: "
+                            + self.quotedForLog(report.text),
+                        sensitive: true
+                    )
                     return
                 }
                 self.panel.hide()
@@ -351,7 +368,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// how, or exactly why not. An empty transcript used to `return` silently here,
     /// which made "the mic gave us nothing", "no speech detected" and "paste blocked"
     /// all look identical from the outside: a panel that disappears and no text.
+    /// How a transcript is rendered into `Spiel.log`.
+    ///
+    /// Verbatim is the point of that log — "it said nothing happened" is only
+    /// debuggable if the text is there. The one exception is a dictation taken while
+    /// macOS Secure Input was active: Secure Input is on precisely because the
+    /// focused field is a password field, so that transcript is plausibly a
+    /// credential and must not be written to a file at all. Length is kept, because
+    /// "did it hear anything?" is still the first debugging question.
+    private func quotedForLog(_ text: String) -> String {
+        guard !secureInputSeenThisDictation else {
+            return "[\(text.count) chars withheld — macOS Secure Input was active, so this may be a password]"
+        }
+        return "\"\(text)\""
+    }
+
     private func deliver(_ report: DictationSession.Report) {
+        // Sticky OR: Secure Input at ANY point of this dictation makes the transcript
+        // unloggable. It can come on mid-dictation (he tabs into a password field) as
+        // easily as it can go off before delivery, and only one of those two mistakes
+        // writes a credential to disk.
+        secureInputSeenThisDictation = secureInputSeenThisDictation || TextInserter.isSecureInputEnabled()
         if report.droppedBuffers > 0 {
             DiagnosticLog.write("WARNING: \(report.droppedBuffers) audio buffers were dropped (sink not armed)")
         }
@@ -367,11 +404,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let target = inserter.capturedAppName ?? "the previous app"
         if outcome.success {
             lastOutcome = "inserted \(report.text.split(separator: " ").count) words into \(target) via \(outcome.method.rawValue) (\(report.diagnosis))"
-            DiagnosticLog.write("finish: \(lastOutcome!) — \"\(report.text)\"")
+            DiagnosticLog.write("finish: \(lastOutcome!) — \(quotedForLog(report.text))", sensitive: true)
         } else {
             let why = outcome.detail ?? "unknown reason — the text is on your clipboard"
             lastOutcome = "could not insert into \(target): \(why)"
-            DiagnosticLog.write("finish: INSERT FAILED into \(target): \(why) — text: \"\(report.text)\"")
+            DiagnosticLog.write(
+                "finish: INSERT FAILED into \(target): \(why) — text: \(quotedForLog(report.text))",
+                sensitive: true
+            )
             Notifier.post(title: "Spiel could not insert the text", body: why)
         }
         updateStatusItem()

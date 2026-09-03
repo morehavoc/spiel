@@ -132,6 +132,7 @@ public final class TextInserter: @unchecked Sendable {
         // Leave the text on the clipboard and say exactly that.
         guard accessibilityTrusted else {
             setPasteboard(text)
+            scheduleRescueClear(text)
             return Outcome(
                 method: .failed,
                 detail: "Accessibility is not granted to this build, so macOS dropped the paste keystroke. "
@@ -151,6 +152,7 @@ public final class TextInserter: @unchecked Sendable {
             // Leave the text on the pasteboard so the work is not lost, and say why —
             // including WHO is holding Secure Input, because that is the fix.
             setPasteboard(text)
+            scheduleRescueClear(text)
             let holder = Self.secureInputHolder().map { " Held by \($0)." } ?? ""
             return Outcome(
                 method: .failed,
@@ -278,7 +280,7 @@ public final class TextInserter: @unchecked Sendable {
         setPasteboard(text)
 
         guard postCommandV() else {
-            restorePasteboard(saved, to: pasteboard)
+            restorePasteboard(saved, to: pasteboard, inserted: text)
             return Outcome(method: .failed, detail: "could not post Cmd+V (CGEvent creation failed)")
         }
 
@@ -287,7 +289,7 @@ public final class TextInserter: @unchecked Sendable {
         // to have had a real turn, then restore all flavors -- not just text.
         let savedSnapshot = saved
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.45) {
-            self.restorePasteboard(savedSnapshot, to: NSPasteboard.general)
+            self.restorePasteboard(savedSnapshot, to: NSPasteboard.general, inserted: text)
         }
 
         return Outcome(method: .paste, detail: nil)
@@ -333,14 +335,69 @@ public final class TextInserter: @unchecked Sendable {
         return PasteboardSnapshot(items: items)
     }
 
+    /// Marker respected by clipboard managers and by Universal Clipboard to mean
+    /// "do not persist or sync this". Password managers set it for the same reason.
+    /// Declared as a literal because there is no AppKit constant for it.
+    public static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
+    /// Puts a transcript on the general pasteboard, ALWAYS marked concealed.
+    ///
+    /// Concealed by default, not only under Secure Input. The first version of this
+    /// concealed only the Secure-Input branch, on the theory that that is the
+    /// password case — but the global pasteboard is readable by every running app
+    /// and, with Universal Clipboard on, is pushed to his iPhone and iPad, and a
+    /// transcript is sensitive whatever the focused field was: client names, medical
+    /// detail, an address read aloud. There is no cost to the marker (the `.string`
+    /// flavor is still there, so Cmd+V is unaffected), so there is no reason to
+    /// decide per-call which dictations deserve it.
     private func setPasteboard(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
+        pb.setData(Data(), forType: Self.concealedType)
         pb.setString(text, forType: .string)
     }
 
-    private func restorePasteboard(_ snapshot: PasteboardSnapshot, to pb: NSPasteboard) {
-        guard !snapshot.items.isEmpty else { return }
+    /// Seconds a rescue transcript is allowed to sit on the global pasteboard before
+    /// Spiel takes it back. Long enough to switch app and press Cmd+V without
+    /// thinking about it; short enough that a dictated password is not still sitting
+    /// there hours later for any app to read.
+    public static let pasteboardRescueTTL: TimeInterval = 90
+
+    /// Clears the pasteboard after `pasteboardRescueTTL`, but ONLY if it still holds
+    /// exactly the transcript we put there.
+    ///
+    /// Keyed on CONTENT rather than on `changeCount`. A bare change-count stamp is
+    /// wrong in both directions: a clipboard manager that rewrites the pasteboard to
+    /// add its own flavors bumps the count while our transcript is still sitting
+    /// there (so we would skip the clear we exist for), and a write landing in the
+    /// gap between our `setString` and the stamp would be deleted 90 s later (so we
+    /// would eat something he copied). Comparing the string cannot do either.
+    private func scheduleRescueClear(_ text: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pasteboardRescueTTL) {
+            Self.clearIfStillOurs(text)
+        }
+    }
+
+    /// Removes `text` from the general pasteboard if that is still what is on it.
+    /// Shared by the rescue timer and the post-paste restore, which need exactly the
+    /// same "only if it is still ours" rule.
+    public static func clearIfStillOurs(_ text: String) {
+        let pb = NSPasteboard.general
+        guard pb.string(forType: .string) == text else { return }
+        pb.clearContents()
+    }
+
+    private func restorePasteboard(_ snapshot: PasteboardSnapshot, to pb: NSPasteboard, inserted: String? = nil) {
+        // An EMPTY snapshot is a real state to restore, not "nothing to do". The
+        // pasteboard was empty before we wrote the transcript, so faithfully
+        // restoring it means clearing it. Returning early here left the transcript
+        // on the global pasteboard indefinitely after every successful fallback
+        // paste made with an empty clipboard — the most common case there is, and
+        // the exact leak the concealed marker and the rescue timer were added for.
+        guard !snapshot.items.isEmpty else {
+            if let inserted { Self.clearIfStillOurs(inserted) }
+            return
+        }
         pb.clearContents()
         var restored: [NSPasteboardItem] = []
         for flavors in snapshot.items {

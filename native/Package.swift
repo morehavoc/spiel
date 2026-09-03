@@ -10,7 +10,12 @@ let package = Package(
         .executable(name: "Spiel", targets: ["SpielApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.6"),
+        // EXACT, not `from:`. `from: "0.15.6"` accepts any later 0.x, so a clean
+        // rebuild months from now could silently pull different code into an app that
+        // holds Accessibility and Microphone grants and sees every word dictated.
+        // The pin plus the committed Package.resolved (which records the commit hash)
+        // is what makes a rebuild reproducible. Bump both deliberately.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.6"),
     ],
     targets: [
         .target(
