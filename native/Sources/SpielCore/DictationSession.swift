@@ -47,7 +47,13 @@ public actor DictationSession {
         /// the audio containing the start of the word.
         public var preRoll: TimeInterval = 0.3
         /// Hard ceiling on one segment, so a monologue still streams.
-        public var maxSegmentDuration: TimeInterval = 20.0
+        ///
+        /// 14 s, not 20: FluidAudio's single-chunk path takes at most
+        /// `ASRConstants.maxModelSamples` = 240,000 samples (15 s at 16 kHz). Anything
+        /// longer is routed to its `ChunkProcessor`, which re-windows the audio and
+        /// manages its own decoder state — slower, and it discards the carried
+        /// context this session maintains. 14 s + the 0.3 s pre-roll stays under it.
+        public var maxSegmentDuration: TimeInterval = 14.0
         public init() {}
     }
 
@@ -208,7 +214,15 @@ public actor DictationSession {
         // 2. Drain whatever the OLD consumer still had queued BEFORE clearing state,
         //    so stale audio cannot be ingested into the new dictation's counters.
         if consumer != nil { sink.finish(); await consumer?.value; consumer = nil }
+        // Cancel AND await: a cancelled segment task that is already inside the
+        // engine cannot be interrupted, and if it were still running when the
+        // assembler below is reset it would `accept` its old text into the NEW
+        // dictation — at index 0, so the new dictation's real first segment would be
+        // held back until flush and land at the end. In the app this list is always
+        // empty here (finish() awaits every task), so this costs nothing; it is the
+        // guard for any caller that resets without finishing.
         for t in inFlight { t.cancel() }
+        for t in inFlight { _ = await t.value }
         inFlight.removeAll()
         await assembler.reset()
         pending.removeAll()
@@ -304,9 +318,28 @@ public actor DictationSession {
             index: index, seconds: Double(audio.count) / AudioCapture.sampleRate
         ))
 
+        // Segments are transcribed ONE AT A TIME, in capture order — each task waits
+        // for the previous segment's task before it calls the engine. Two reasons,
+        // both measured against the engine rather than assumed:
+        //   1. `ParakeetTranscriber` carries TDT decoder state (last token + LSTM
+        //      state) from one segment into the next so a sentence boundary keeps its
+        //      linguistic context. FluidAudio's `AsrManager` is a reentrant actor, so
+        //      two segments in flight at once would both start from the SAME stale
+        //      state and the last one to finish would overwrite the other's — the
+        //      carried context would then be from whichever segment happened to
+        //      finish last, not the one that was spoken last.
+        //   2. There is one Neural Engine; concurrent CoreML predictions on one model
+        //      do not run faster, they queue inside CoreML. Chaining here costs
+        //      nothing and makes the order deterministic.
+        // `TranscriptAssembler` still reorders on index — defence in depth, and it is
+        // what keeps a failed segment from swallowing the ones after it.
+        let previous = inFlight.last
         let task = Task { [weak self, transcriber, assembler, glossary, eventHandler] in
+            if let previous { _ = await previous.value }
+            if Task.isCancelled { return }
             do {
                 let raw = try await transcriber.transcribe(samples: audio)
+                if Task.isCancelled { return }
                 let released = await assembler.accept(
                     TranscriptSegment(index: index, text: raw)
                 )
@@ -314,6 +347,7 @@ public actor DictationSession {
                     eventHandler?(.textReleased(glossary.apply(to: released)))
                 }
             } catch {
+                if Task.isCancelled { return }
                 // Emit an empty segment so the assembler's ordering gate does not stall
                 // on a hole and swallow everything spoken after it.
                 _ = await assembler.accept(
@@ -347,15 +381,12 @@ public actor DictationSession {
         await consumer?.value
         consumer = nil
 
-        // Whatever is left below one VAD frame is still real speech.
+        // Whatever is left below one VAD frame is still real speech IF a segment
+        // is open. (`pending` is always shorter than one 256 ms frame here —
+        // `ingest` drains whole frames — so a sub-frame tail with no open segment
+        // is at most 256 ms of audio the VAD never called speech; it is dropped.)
         if !pending.isEmpty {
-            if speaking {
-                current.append(contentsOf: pending)
-            } else if pending.count > Int(config.minSpeechDuration * AudioCapture.sampleRate) {
-                current = preRollBuffer + pending
-                speaking = true
-                speechRun = max(speechRun, config.minSpeechDuration)
-            }
+            if speaking { current.append(contentsOf: pending) }
             pending.removeAll()
         }
         if speaking || !current.isEmpty {

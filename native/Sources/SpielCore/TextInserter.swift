@@ -208,20 +208,65 @@ public final class TextInserter: @unchecked Sendable {
         guard setErr == .success else { return nil }
 
         // VERIFY. A .success return from AX is not proof the text landed -- several
-        // apps accept the set and ignore it. Read the value back; if the element
-        // won't tell us, treat that as unverified and fall back to paste rather than
-        // reporting a success we cannot demonstrate.
-        var readback: CFTypeRef?
-        let readErr = AXUIElementCopyAttributeValue(
-            element, kAXValueAttribute as CFString, &readback
-        )
-        if readErr == .success, let value = readback as? String {
-            if value.contains(text) {
-                return Outcome(method: .accessibility, detail: nil)
+        // apps accept the set and ignore it. Two checks, in order:
+        //   1. the value now CONTAINS the text — the strong form;
+        //   2. the value contains the text after TYPOGRAPHIC NORMALISATION of both
+        //      sides. An app that applies smart quotes or smart dashes to programmatic
+        //      input (Notes, Pages, TextEdit can) turns `Let's` into `Let’s`, check 1
+        //      fails on text that DID land, and the old code then fell through to
+        //      paste and inserted it a SECOND time.
+        // What is deliberately NOT accepted: "the value changed". A codex review of
+        // that version pointed out that autocorrect, live formatting or a placeholder
+        // swap can change AXValue without our text landing, and reporting success
+        // there suppresses the paste fallback — the dictation is lost, which is the
+        // worse failure. Unverified (value unreadable, or no match either way) still
+        // falls back to paste, so the residual risk is a duplicate on an exotic
+        // transform, exactly as before this pass.
+        if let after = Self.axStringValue(of: element) {
+            if after.contains(text) { return Outcome(method: .accessibility, detail: nil) }
+            if Self.normalizedForVerification(after).contains(Self.normalizedForVerification(text)) {
+                return Outcome(method: .accessibility, detail: "verified after typographic normalisation")
             }
             return nil  // it lied; fall through to paste
         }
         return nil
+    }
+
+    /// Folds the substitutions macOS text views apply to inserted text — smart
+    /// quotes, smart dashes, ellipsis, non-breaking and repeated whitespace — so a
+    /// reformatted insertion can still be matched against what was sent. Case is
+    /// preserved on purpose: a casing change is not something a text view does to
+    /// programmatic input, and folding it would widen the match for no reason.
+    public static func normalizedForVerification(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        var lastWasSpace = false
+        for ch in s {
+            let mapped: Character
+            switch ch {
+            case "\u{2018}", "\u{2019}", "\u{201A}", "\u{2032}": mapped = "'"
+            case "\u{201C}", "\u{201D}", "\u{201E}", "\u{2033}": mapped = "\""
+            case "\u{2013}", "\u{2014}", "\u{2212}": mapped = "-"
+            case "\u{2026}": out += "..."; lastWasSpace = false; continue
+            case "\u{00A0}", "\t", "\n", "\r": mapped = " "
+            default: mapped = ch
+            }
+            if mapped == " " {
+                if lastWasSpace { continue }
+                lastWasSpace = true
+            } else {
+                lastWasSpace = false
+            }
+            out.append(mapped)
+        }
+        return out.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func axStringValue(of element: AXUIElement) -> String? {
+        var readback: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &readback)
+        guard err == .success else { return nil }
+        return readback as? String
     }
 
     // MARK: - Tier 2: synthetic paste via CGEvent

@@ -36,10 +36,19 @@ actor CountingTranscriber: Transcriber {
     /// a competing reset() arrives. Without this the race test passes vacuously.
     var slowNext = 0
     func setSlowNext(_ n: Int) { slowNext = n }
+    /// How many transcribe calls were in flight at once, at most. The session must
+    /// keep this at 1: the Parakeet decoder state is carried between segments and
+    /// races if two calls overlap.
+    private(set) var maxConcurrent = 0
+    private var active = 0
+    func resetConcurrency() { maxConcurrent = 0; active = 0 }
     func prepare() async throws {}
     func transcribe(samples: [Float]) async throws -> String {
         calls += 1
         samplesSeen += samples.count
+        active += 1
+        maxConcurrent = max(maxConcurrent, active)
+        defer { active -= 1 }
         if failNext > 0 { failNext -= 1; throw TranscriberError.failed("stub failure") }
         if slowNext > 0 {
             slowNext -= 1
@@ -133,12 +142,20 @@ enum SelfTest {
         expect(String(format: "%.2f", r2.audioSeconds), "3.00", "round 2: all audio reached the session")
         expectInt(r2.droppedBuffers, 0, "round 2: nothing dropped")
 
-        // Round 3 — two bursts, ordered.
+        // Round 3 — two bursts, ordered. The first is SLOW, so under the old
+        // one-Task-per-segment scheme the second would have entered the engine while
+        // the first was still inside it (both bursts are pre-fed, so the VAD closes
+        // them milliseconds apart). Segments must be transcribed one at a time, in
+        // capture order: the engine carries decoder state between them.
         await session.reset()
+        await transcriber.resetConcurrency()
+        await transcriber.setSlowNext(1)
         feedLikeMic(session, burst(speech: 0.8) + burst(speech: 0.8))
         let r3 = await session.finishWithReport()
         expect(r3.text, "word3 word4", "two bursts become two segments in speech order")
         expectInt(r3.segments, 2, "round 3: two segments")
+        expectInt(await transcriber.maxConcurrent, 1,
+                  "segments are transcribed one at a time (carried decoder state must not race)")
 
         // Diagnoses — the three kinds of "nothing", told apart.
         await session.reset()
@@ -192,6 +209,21 @@ enum SelfTest {
         rDrop.text = "hello there"; rDrop.audioSeconds = 2; rDrop.segments = 1; rDrop.droppedBuffers = 7
         expect(rDrop.diagnosis.contains("7 audio buffers dropped") && rDrop.diagnosis.hasPrefix("PARTIAL") ? "ok" : rDrop.diagnosis, "ok",
                "dropped buffers with text: diagnosis leads with the drop")
+
+        // reset() WITHOUT a finish, while a segment is still inside the engine: the
+        // abandoned segment must not `accept` its text into the next dictation. If
+        // it did, the old text would land at index 0 and the new dictation's real
+        // first segment would be held back to the end.
+        await session.reset()
+        await transcriber.setSlowNext(1)
+        feedLikeMic(session, burst(speech: 1.0))
+        try? await Task.sleep(nanoseconds: 700_000_000)  // segment closed, engine sleeping
+        await session.reset()  // abandon it
+        feedLikeMic(session, burst(speech: 1.0))
+        let rAbandon = await session.finishWithReport()
+        expectInt(rAbandon.segments, 1, "abandoned dictation: the new one counts only its own segment")
+        expect(rAbandon.text.split(separator: " ").count == 1 ? "one" : rAbandon.text, "one",
+               "abandoned dictation: its text does not leak into the next one")
 
         // Fast second press: reset() while finish() is still suspended must wait for
         // it, not interleave. Run them concurrently and require both to be coherent.
@@ -332,6 +364,16 @@ enum SelfTest {
             expect(NSPasteboard.general.string(forType: .string) ?? "", "hello from selftest",
                    "the text is left on the clipboard so nothing is lost")
         }
+
+        print("\nTextInserter — AX readback verification folds typographic substitutions")
+        expect(TextInserter.normalizedForVerification("Let\u{2019}s \u{201C}go\u{201D} \u{2014} now\u{2026}"),
+               "Let's \"go\" - now...", "smart quotes, em dash and ellipsis fold to ASCII")
+        expect(TextInserter.normalizedForVerification("a\u{00A0}b  c\td"), "a b c d",
+               "non-breaking, repeated and tab whitespace collapse to one space")
+        expect(TextInserter.normalizedForVerification("Case Kept"), "Case Kept", "case is preserved")
+        expect(TextInserter.normalizedForVerification("unrelated autocorrect happened").contains(
+                   TextInserter.normalizedForVerification("send the link")) ? "match" : "no match", "no match",
+               "an unrelated value change does NOT verify an insertion (paste fallback must still fire)")
 
         print("\nVAD framing — Silero needs whole 4096-sample frames")
         // VadManager.chunkSize is 4096 and processChunk pads anything shorter by

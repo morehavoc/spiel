@@ -20,9 +20,21 @@ final class RecordingPanel {
 
     func show(status: String) {
         if panel == nil { build() }
+        // Re-place on EVERY show: the panel was positioned once at build time, so on
+        // a Mac that moves between a laptop screen and external displays it stayed
+        // parked on whichever screen was main at the first dictation — which can
+        // be a display that is no longer connected, i.e. an invisible panel.
+        if let p = panel { p.setFrameOrigin(Self.origin(for: p.frame.size)) }
         meterView?.statusText = status
         panel?.orderFrontRegardless()
         meterView?.needsDisplay = true
+    }
+
+    /// Top-centre of the screen holding the key window (falls back to the first
+    /// screen), below the menu bar.
+    private static func origin(for size: NSSize) -> NSPoint {
+        let screen = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
+        return NSPoint(x: screen.midX - size.width / 2, y: screen.maxY - size.height - 40)
     }
 
     func hide() { panel?.orderOut(nil) }
@@ -54,13 +66,8 @@ final class RecordingPanel {
     private func build() {
         // Bigger on purpose (was 260×54 with 18 px bars): Christopher, 2026-09-02,
         // "sure would be nice if the little blue dots were bigger… barely noticeable".
-        let width: CGFloat = 420, height: CGFloat = 150
-        let screen = NSScreen.main?.visibleFrame ?? .zero
-        let rect = NSRect(
-            x: screen.midX - width / 2,
-            y: screen.maxY - height - 40,
-            width: width, height: height
-        )
+        let size = NSSize(width: 420, height: 150)
+        let rect = NSRect(origin: Self.origin(for: size), size: size)
         let p = NSPanel(
             contentRect: rect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -86,7 +93,10 @@ private final class MeterView: NSView {
     /// leading ellipsis when anything was cut.
     static func tail(_ text: String, fitting rect: NSRect, attrs: [NSAttributedString.Key: Any]) -> String {
         let words = text.split(separator: " ").map(String.init)
-        guard !words.isEmpty else { return text }
+        // One word (or none) leaves nothing to trim from the front: the binary
+        // search below would otherwise index `words[1...]` on a one-element array
+        // when a single very long token — a dictated URL, say — overflows the box.
+        guard words.count > 1 else { return text }
         func fits(_ start: Int) -> Bool {
             let s = (start > 0 ? "…" : "") + words[start...].joined(separator: " ")
             let r = NSAttributedString(string: s, attributes: attrs).boundingRect(
@@ -104,7 +114,13 @@ private final class MeterView: NSView {
     }
 
     var statusText: String = "Listening"
-    var transcript: String = ""
+    var transcript: String = "" {
+        didSet { if transcript != oldValue { tailCache = nil } }
+    }
+    /// `tail` measures text with a binary search of layout passes; at the 15 Hz
+    /// meter redraw that was ~100 layouts/s for a string that changes once per
+    /// segment. Cached until the transcript changes.
+    private var tailCache: (width: CGFloat, shown: String)?
     private static let meterHeight: CGFloat = 40
     private static let textTop: CGFloat = 62  // y where the text area ends (from bottom)
     private var levels: [Float] = Array(repeating: 0, count: 36)
@@ -132,7 +148,15 @@ private final class MeterView: NSView {
             .font: NSFont.systemFont(ofSize: 13, weight: .regular),
             .foregroundColor: NSColor(calibratedWhite: 0.95, alpha: 1),
         ]
-        let shown = transcript.isEmpty ? "…" : Self.tail(transcript, fitting: textRect, attrs: textAttrs)
+        let shown: String
+        if transcript.isEmpty {
+            shown = "…"
+        } else if let c = tailCache, c.width == textRect.width {
+            shown = c.shown
+        } else {
+            shown = Self.tail(transcript, fitting: textRect, attrs: textAttrs)
+            tailCache = (textRect.width, shown)
+        }
         let para = NSMutableParagraphStyle(); para.lineBreakMode = .byWordWrapping
         var attrs2 = textAttrs; attrs2[.paragraphStyle] = para
         let str = NSAttributedString(string: shown, attributes: attrs2)

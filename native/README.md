@@ -64,7 +64,7 @@ merged over the built-in `Glossary` terms.
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 78/78 expected
+.build/release/spiel-cli selftest     # 81/81 expected
 ./scripts/bundle.sh release           # → build/Spiel.app
 ```
 

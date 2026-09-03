@@ -17,6 +17,7 @@ public final class AudioCapture: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var onSamples: (([Float]) -> Void)?
+    private var configObserver: NSObjectProtocol?
     private(set) public var isRunning = false
 
     public init() {}
@@ -73,6 +74,14 @@ public final class AudioCapture: @unchecked Sendable {
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
+        // With NO input device (headless Mac, or every input disconnected) the node
+        // reports 0 Hz / 0 channels, and `installTap` then raises an ObjC exception —
+        // an app crash, not a thrown error. Refuse up front and say why.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw CaptureError.engineFailed(
+                "no usable input device (format \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch) — is a microphone connected and selected in System Settings → Sound?"
+            )
+        }
 
         guard let target = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -93,6 +102,19 @@ public final class AudioCapture: @unchecked Sendable {
             }
         }
 
+        // The engine STOPS ITSELF when the audio route changes mid-capture (AirPods
+        // connect, a USB mic unplugs, the default input is switched). Nothing else
+        // tells us: the tap simply stops firing, the meter freezes, and the report
+        // would read "N s of audio" with no explanation. Log it so the dictation's
+        // silence is attributable.
+        configObserver.map { NotificationCenter.default.removeObserver($0) }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            DiagnosticLog.write("audio engine configuration changed mid-capture (input device switched or removed?) — capture stopped; default input is now \(Self.defaultInputDeviceName())")
+        }
+
         engine.prepare()
         do {
             try engine.start()
@@ -109,6 +131,8 @@ public final class AudioCapture: @unchecked Sendable {
         engine.stop()
         isRunning = false
         onSamples = nil
+        configObserver.map { NotificationCenter.default.removeObserver($0) }
+        configObserver = nil
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer) -> [Float]? {

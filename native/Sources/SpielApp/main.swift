@@ -41,6 +41,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLog.write("launch — Spiel \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") pid \(ProcessInfo.processInfo.processIdentifier)")
+        // Two copies of Spiel (an older build left running while a new one is
+        // opened — seven builds shipped on 2026-09-02 alone) fight over one global
+        // hotkey: the second loses with "another app already owns ⌘⇧D", which reads
+        // as a conflict with some OTHER app. Name the real cause.
+        if let bundleID = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            if !others.isEmpty {
+                let pids = others.map { "\($0.processIdentifier)" }.joined(separator: ", ")
+                let msg = "another copy of Spiel is already running (pid \(pids)) — quit it from its menu-bar icon, or the hotkey will belong to whichever started first"
+                DiagnosticLog.write("WARNING: \(msg)")
+                lastError = msg
+                Notifier.post(title: "Two copies of Spiel are running", body: msg)
+            }
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Rebuild the menu each time it opens, so Secure Input / Accessibility /
         // engine state are read at that instant rather than frozen at the last event.
@@ -125,8 +140,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeSession(_ transcriber: Transcriber) async throws -> DictationSession {
         let s = DictationSession(transcriber: transcriber)
         try await s.prepare()
-        await s.setEventHandler { [weak self] event in
-            Task { @MainActor in self?.handle(event) }
+        await s.setEventHandler { [weak self, weak s] event in
+            Task { @MainActor in
+                // A session the watchdog abandoned can still finish a transcribe
+                // later and emit `.textReleased`; only the CURRENT session may drive
+                // the preview, or a minute-old sentence lands in the next dictation's
+                // panel (codex review of build 8).
+                guard let self, let s, self.session === s else { return }
+                self.handle(event)
+            }
         }
         return s
     }
@@ -210,7 +232,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Re-read the vocabulary file so an edit takes effect on the next dictation.
         let glossary = Glossary.load()
-        Task { await session.setGlossary(glossary) }
         // Capture the target app BEFORE our panel appears.
         inserter.captureFrontmostApp()
         DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(TextInserter.isSecureInputEnabled()), vocabulary = \(glossary.count) aliases")
@@ -221,6 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         phase = .starting
         updateStatusItem()
         Task {
+            // One task, in order: two separate Tasks against the same actor have no
+            // ordering guarantee between them, and a glossary swap that landed after
+            // reset() would still work but one that landed after the first segment's
+            // release would apply the OLD vocabulary to that segment's preview.
+            await session.setGlossary(glossary)
             await session.reset()
             await MainActor.run { self.beginCapture(session) }
         }
@@ -269,18 +295,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusItem()
     }
 
+    /// If the engine never returns, `phase` would stay `finishing` forever: every
+    /// hotkey press "ignored", the menu's Start/Stop item inert, the panel stuck on
+    /// "Finishing…" — a dead app that can only be quit. Nothing has hung yet; this
+    /// exists because that is the one state the app cannot recover from on its own.
+    /// Generous, because a 14 s segment on a cold Neural Engine is a few seconds.
+    private static let finishWatchdogSeconds: UInt64 = 60
+    private var finishGeneration = 0
+
     private func stop() {
         guard let session, phase == .recording else { return }
         capture.stop()
         phase = .finishing
         panel.setStatus("Finishing…")
         updateStatusItem()
+        finishGeneration += 1
+        let generation = finishGeneration
         Task {
             let report = await session.finishWithReport()
             await MainActor.run {
+                // A finish that comes back after the watchdog already replaced the
+                // session is stale: its text would be delivered into whatever he is
+                // doing now, a minute later.
+                guard self.finishGeneration == generation, self.phase == .finishing else {
+                    DiagnosticLog.write("stale finish ignored (watchdog already fired) — text was: \"\(report.text)\"")
+                    return
+                }
                 self.panel.hide()
                 self.phase = .idle
                 self.deliver(report)
+            }
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: Self.finishWatchdogSeconds * 1_000_000_000)
+            await MainActor.run {
+                guard self.finishGeneration == generation, self.phase == .finishing else { return }
+                let msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; that dictation is lost"
+                DiagnosticLog.write("WATCHDOG: \(msg)")
+                self.panel.hide()
+                self.phase = .idle
+                self.lastOutcome = msg
+                self.lastError = msg
+                // Drop the wedged session and build a fresh one; the old one's tasks
+                // are abandoned, not awaited (awaiting is the thing that hung).
+                self.session = nil
+                self.engineReady = false
+                self.updateStatusItem()
+                Notifier.post(title: "Spiel got stuck finishing", body: msg)
+                Task { await self.warmUp() }
             }
         }
     }

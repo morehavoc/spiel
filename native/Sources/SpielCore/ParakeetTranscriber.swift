@@ -39,6 +39,16 @@ public actor ParakeetTranscriber: Transcriber {
         guard let manager else { throw TranscriberError.notPrepared("call prepare() first") }
         guard !samples.isEmpty else { return "" }
 
+        // FluidAudio throws `invalidAudioData` below `ASRConstants.minimumRequiredSamples`
+        // (0.3 s = 4,800 samples). A segment closed by the STOP hotkey can be a single
+        // 4,096-sample VAD frame with no pre-roll yet, which would turn "yes" into a
+        // reported engine failure. Pad with silence to the floor; the model is trained
+        // on padded windows anyway.
+        let floor = ASRConstants.minimumRequiredSamples(forSampleRate: Int(AudioCapture.sampleRate))
+        let input = samples.count >= floor
+            ? samples
+            : samples + [Float](repeating: 0, count: floor - samples.count)
+
         // Parakeet is a transducer with carry-over decoder state. Reusing the state
         // across segments of one dictation preserves linguistic context at segment
         // boundaries -- the thing the old chunked-Whisper pipeline could never do,
@@ -46,7 +56,7 @@ public actor ParakeetTranscriber: Transcriber {
         if decoderState == nil { decoderState = try TdtDecoderState() }
         var state = decoderState!
         do {
-            let result = try await manager.transcribe(samples, decoderState: &state)
+            let result = try await manager.transcribe(input, decoderState: &state)
             decoderState = state
             return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
@@ -54,6 +64,10 @@ public actor ParakeetTranscriber: Transcriber {
         }
     }
 
+    /// Callers must not overlap `transcribe` calls: the carried state is read at
+    /// entry and written at exit, and `AsrManager` is a reentrant actor, so two
+    /// concurrent calls would race on it. `DictationSession` serialises segments.
+    ///
     /// Clears carried decoder context. Call between dictations so one session's
     /// last word cannot bias the next session's first.
     public func resetContext() {
