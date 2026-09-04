@@ -94,7 +94,15 @@ public enum LaunchAtLogin {
         case .notRegistered: return .off
         case .requiresApproval: return .requiresApproval
         case .notFound:
-            return .unavailable("macOS has no record of this copy of Spiel — reopen it from /Applications")
+            // MEASURED 2026-09-03, not assumed: a bundle that has never been registered
+            // reports `notFound`, and `register()` succeeds from that state
+            // (notFound → register ok → enabled → unregister ok → notRegistered, run
+            // against a throwaway bundle signed with Spiel's own self-signed identity).
+            // So this is the FIRST-LAUNCH state and it must read as a plain, clickable
+            // off. An earlier draft called it `unavailable`, which would have greyed the
+            // toggle out for every new install — the feature dead on arrival, with a
+            // confident explanation attached.
+            return .off
         @unknown default:
             return .unavailable("macOS returned an unrecognised login-item status (\(status.rawValue))")
         }

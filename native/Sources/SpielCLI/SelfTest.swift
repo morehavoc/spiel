@@ -537,12 +537,14 @@ enum SelfTest {
                    "a login item the user switched off in System Settings is NOT reported as on")
             expect(LaunchAtLogin.describe(.requiresApproval).isChecked ? "checked" : "unchecked", "unchecked",
                    "only .on draws a checkmark — an approval-blocked item must not look enabled")
-            if case .unavailable = LaunchAtLogin.describe(.notFound) {
-                expect("unavailable", "unavailable", "an unknown-to-macOS registration reads as unavailable, never off")
-            } else {
-                expect("\(LaunchAtLogin.describe(.notFound))", "unavailable",
-                       "an unknown-to-macOS registration reads as unavailable, never off")
-            }
+            // Measured on a real self-signed bundle: a never-registered app reports
+            // .notFound, and register() succeeds from there. It is the first-launch
+            // state, so it must be a clickable off — not a greyed-out "unavailable",
+            // which would kill the feature for every new install.
+            expect(LaunchAtLogin.describe(.notFound) == .off ? "off" : "other", "off",
+                   "a never-registered app (.notFound) is a clickable off, not unavailable")
+            expect(LaunchAtLogin.describe(.notFound).isChecked ? "checked" : "unchecked", "unchecked",
+                   "…and it still draws no checkmark")
 
             // This binary is spiel-cli: no bundle identifier, so the live read must
             // report unavailable rather than inventing an answer.
