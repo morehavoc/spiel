@@ -501,6 +501,64 @@ enum SelfTest {
                    "an absurdly long alias is dropped, a normal one survives")
         }
 
+        // MARK: Open at Login
+        // Nothing here registers anything — these drive the pure decision helpers
+        // plus the read-only state, so running selftest never touches the user's
+        // real login items.
+        print("\nOpen at Login — the checkmark must never outrank what macOS says")
+        do {
+            let translocated = "/private/var/folders/xy/T/AppTranslocation/A1B2/d/Spiel.app"
+            expect(LaunchAtLogin.isTranslocated(bundlePath: translocated) ? "yes" : "no", "yes",
+                   "a Gatekeeper-translocated copy is recognised")
+            expect(LaunchAtLogin.isTranslocated(bundlePath: "/Applications/Spiel.app") ? "yes" : "no", "no",
+                   "a normally installed copy is NOT called translocated (guards against a blanket refusal)")
+
+            // Registering from a translocated copy would report success and then never
+            // launch, because the path is gone at the next login. It must be refused.
+            expect(LaunchAtLogin.blocker(bundleIdentifier: "com.morehavoc.spiel", bundlePath: translocated) == nil ? "allowed" : "blocked",
+                   "blocked", "registration is refused from a translocated copy")
+            expect(LaunchAtLogin.blocker(bundleIdentifier: "com.morehavoc.spiel", bundlePath: "/Applications/Spiel.app") ?? "nil",
+                   "nil", "registration is allowed from /Applications")
+            expect(LaunchAtLogin.blocker(bundleIdentifier: nil, bundlePath: "/usr/local/bin/spiel-cli") == nil ? "allowed" : "blocked",
+                   "blocked", "an unbundled binary cannot register a login item")
+
+            expect(LaunchAtLogin.locationNote(bundlePath: "/Applications/Spiel.app") ?? "nil", "nil",
+                   "no location warning for /Applications")
+            expect(LaunchAtLogin.locationNote(bundlePath: "/Users/x/Downloads/Spiel.app")?.contains("Downloads") == true ? "ok" : "missing",
+                   "ok", "living in Downloads is called out by name — the next build replaces it")
+            expect(LaunchAtLogin.locationNote(bundlePath: "/Users/x/Desktop/Spiel.app") == nil ? "nil" : "warned",
+                   "warned", "any location outside /Applications gets a warning")
+
+            expect(LaunchAtLogin.describe(.enabled) == .on ? "on" : "other", "on",
+                   "macOS .enabled reads as ON")
+            expect(LaunchAtLogin.describe(.notRegistered) == .off ? "off" : "other", "off",
+                   "macOS .notRegistered reads as off")
+            expect(LaunchAtLogin.describe(.requiresApproval) == .requiresApproval ? "approval" : "other", "approval",
+                   "a login item the user switched off in System Settings is NOT reported as on")
+            expect(LaunchAtLogin.describe(.requiresApproval).isChecked ? "checked" : "unchecked", "unchecked",
+                   "only .on draws a checkmark — an approval-blocked item must not look enabled")
+            if case .unavailable = LaunchAtLogin.describe(.notFound) {
+                expect("unavailable", "unavailable", "an unknown-to-macOS registration reads as unavailable, never off")
+            } else {
+                expect("\(LaunchAtLogin.describe(.notFound))", "unavailable",
+                       "an unknown-to-macOS registration reads as unavailable, never off")
+            }
+
+            // This binary is spiel-cli: no bundle identifier, so the live read must
+            // report unavailable rather than inventing an answer.
+            if case .unavailable = LaunchAtLogin.state() {
+                expect("unavailable", "unavailable", "spiel-cli reports Open at Login as unavailable, not off or on")
+            } else {
+                expect(LaunchAtLogin.label(LaunchAtLogin.state()), "unavailable",
+                       "spiel-cli reports Open at Login as unavailable, not off or on")
+            }
+            expect(LaunchAtLogin.label(.on), "on", "the label for on")
+            expect(LaunchAtLogin.label(.requiresApproval).contains("System Settings") ? "ok" : "missing", "ok",
+                   "the blocked label names where to fix it")
+            expect(LaunchAtLogin.settingsURL.scheme ?? "nil", "x-apple.systempreferences",
+                   "the Login Items deep link is a System Settings URL")
+        }
+
         await pipelineTests()
 
         print("\n\(checks - failures)/\(checks) checks passed")

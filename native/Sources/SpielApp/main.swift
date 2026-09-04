@@ -495,6 +495,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logItem.target = self
         menu.addItem(logItem)
 
+        // The checkmark is read from macOS on every menu open, never from a stored
+        // preference — a login item the user switched off in System Settings would
+        // otherwise keep showing a tick while Spiel never launched.
+        let launchState = LaunchAtLogin.state()
+        let launchItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        launchItem.target = self
+        launchItem.state = launchState.isChecked ? .on : .off
+        switch launchState {
+        case .on, .off:
+            if launchState.isChecked, let note = LaunchAtLogin.locationNote(bundlePath: Bundle.main.bundleURL.path) {
+                menu.addItem(launchItem)
+                menu.addItem(withTitle: "    \(note)", action: nil, keyEquivalent: "")
+            } else {
+                menu.addItem(launchItem)
+            }
+        case .requiresApproval:
+            launchItem.title = "⚠︎ Open at Login is blocked in System Settings"
+            launchItem.action = #selector(openLoginItemsSettings)
+            menu.addItem(launchItem)
+            menu.addItem(withTitle: "    Click to open Login Items — only you can switch it back on there",
+                         action: nil, keyEquivalent: "")
+        case .unavailable(let why):
+            launchItem.title = "Open at Login — unavailable"
+            launchItem.action = nil
+            menu.addItem(launchItem)
+            menu.addItem(withTitle: "    \(why)", action: nil, keyEquivalent: "")
+        }
+
         menu.addItem(.separator())
         let toggleItem = NSMenuItem(
             title: isRecording ? "Stop Dictation" : "Start Dictation",
@@ -570,8 +598,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + "microphone: \(AudioCapture.microphoneAuthorization().rawValue), input device: \(AudioCapture.defaultInputDeviceName()); "
             + "accessibility effective: \(TextInserter.hasAccessibilityPermission()); "
             + "secure input: \(TextInserter.isSecureInputEnabled()); "
+            + "open at login: \(LaunchAtLogin.label(LaunchAtLogin.state())); "
             + "last outcome: \(lastOutcome ?? "none yet"); last error: \(lastError ?? "none"); "
             + "signature: \(Self.signatureSummary())"
+    }
+
+    /// Menu → Open at Login. Reports the state macOS gives back AFTER the call,
+    /// not the state we asked for: registration can fail (translocated copy, user
+    /// approval revoked) and a menu that ticks itself optimistically would claim a
+    /// login item that does not exist.
+    @objc private func toggleLaunchAtLogin() {
+        let want = LaunchAtLogin.state() != .on
+        let (after, error) = LaunchAtLogin.setEnabled(want)
+        if let error {
+            lastError = "Open at Login: \(error)"
+            Notifier.post(title: "Spiel could not change Open at Login", body: error)
+        } else if want, case .on = after,
+                  let note = LaunchAtLogin.locationNote(bundlePath: Bundle.main.bundleURL.path) {
+            Notifier.post(title: "Spiel will open at login", body: note)
+        } else if want, after != .on {
+            // Asked for on, did not get on, and nothing threw — say so rather than
+            // leaving a silently unticked box.
+            lastError = "Open at Login did not take effect: \(LaunchAtLogin.label(after))"
+        }
+        updateStatusItem()
+    }
+
+    @objc private func openLoginItemsSettings() {
+        NSWorkspace.shared.open(LaunchAtLogin.settingsURL)
     }
 
     @objc private func menuToggle() { toggle() }
