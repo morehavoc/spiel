@@ -3,6 +3,22 @@
 A ground-up Swift rewrite of Spiel's engine, living alongside the original Electron
 app on the `v2-native` branch. Nothing in `electron/` or `src/` was touched.
 
+## What it looks like
+
+Hold the hotkey, talk, let go. The text lands in whatever had focus.
+
+![Spiel v2 listening panel — hold the hotkey, the menu bar mic goes orange, the panel shows the live waveform and the transcript as each segment lands](docs/media/spiel-v2-demo.gif)
+
+Three moments from that clip:
+
+| Idle | Mid-sentence | Done |
+|---|---|---|
+| ![Menu bar with the Spiel mic icon idle](docs/media/spiel-v2-still-1.png) | ![Panel with the first sentence landed while the waveform keeps moving](docs/media/spiel-v2-still-3.png) | ![Panel with the full paragraph before the hotkey is released](docs/media/spiel-v2-still-4.png) |
+
+Everything in that panel ran on the laptop — Parakeet on the Neural Engine, no
+network, no API key. (Yes, it heard "Claude Code" as "clawed code". Local models
+have opinions.)
+
 ## Why a rewrite rather than an engine swap
 
 The three long-standing complaints about v1 are all **architecture**, not model
