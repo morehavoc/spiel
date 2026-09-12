@@ -316,6 +316,63 @@ enum SelfTest {
                "ids are the EventHotKeyID values the Carbon callback reads back (1 dictation, 2 listen)")
     }
 
+    /// Source-anchored rules the CLI cannot exercise at runtime (the app is AppKit).
+    /// Finds the package root by walking up from this executable; if the source is
+    /// not beside the binary (an installed CLI), the section is SKIPPED and says so
+    /// rather than passing vacuously.
+    static func listenSourceRules() {
+        print("\nListen — app-source rules (design §5)")
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var main: URL?
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("Sources/SpielApp/main.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) { main = candidate; break }
+            dir.deleteLastPathComponent()
+        }
+        guard let main, let src = try? String(contentsOf: main, encoding: .utf8) else {
+            print("  – SKIPPED: Sources/SpielApp/main.swift not found beside this binary (nothing asserted)")
+            return
+        }
+        // Body of one `private func name(` up to the next top-level member. Comments
+        // are stripped first so an assertion cannot match prose that discusses the
+        // rule (#131/#152/#166 shape).
+        func body(of name: String) -> String? {
+            let stripped = src.split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line -> String in
+                    if let r = line.range(of: "//") { return String(line[..<r.lowerBound]) }
+                    return String(line)
+                }.joined(separator: "\n")
+            guard let start = stripped.range(of: "private func \(name)(") else { return nil }
+            let rest = stripped[start.upperBound...]
+            let end = rest.range(of: "\n    private func ") ?? rest.range(of: "\n    @objc ") ?? rest.range(of: "\n    // MARK") ?? rest.endIndex..<rest.endIndex
+            return String(rest[..<end.lowerBound])
+        }
+        guard let listen = body(of: "startListening"), let dictate = body(of: "start") else {
+            expect("missing", "found", "startListening() and start() exist in main.swift")
+            return
+        }
+        // The counter-check first: the dictation path DOES read Secure Input, so a
+        // rename of the API cannot make the next assertion pass for nothing.
+        expect(dictate.contains("isSecureInputEnabled()") ? "reads" : "missing", "reads",
+               "start() (dictation) still latches Secure Input")
+        expect(listen.contains("isSecureInputEnabled") ? "reads" : "clean", "clean",
+               "startListening() never reads Secure Input — skipped, not inherited (§5.6)")
+        expect(listen.contains("captureFrontmostApp") ? "captures" : "clean", "clean",
+               "startListening() does not capture a target app (Listen never pastes)")
+        expect(listen.contains("WindowTitle.frontmost()") ? "ok" : "missing", "ok",
+               "startListening() pre-fills the title from the frontmost window")
+        guard let toggle = body(of: "toggle") else { expect("missing", "found", "toggle() exists"); return }
+        expect(toggle.contains("case .recording(.listen), .paused:") && toggle.contains("stop it to dictate") ? "ok" : "missing", "ok",
+               "⌘⇧D during Listen is refused with a reason, not multiplexed (§5.1)")
+        expect(src.contains("case .paused:\n            symbol = \"pause.circle\"") || src.contains("symbol = \"pause.circle\"") ? "ok" : "missing", "ok",
+               "paused Listen has its own status symbol")
+        expect(src.contains("symbol = \"waveform\"") ? "ok" : "missing", "ok",
+               "Listen has a status symbol distinct from dictation's mic.fill")
+        guard let route = body(of: "captureRouteChanged") else { expect("missing", "found", "captureRouteChanged exists"); return }
+        expect(route.contains("noteCaptureRestart(device:") && route.contains("stopListening()") ? "ok" : "missing", "ok",
+               "a route change writes a marker on success and stops Listen (with a notification) on failure")
+    }
+
     static func transcriptDocumentTests() {
         print("\nTranscriptDocument — paragraphs, markers, offsets, rendering")
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
@@ -918,6 +975,7 @@ enum SelfTest {
         transcriptDocumentTests()
         transcriptStoreTests()
         hotkeyRoutingTests()
+        listenSourceRules()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

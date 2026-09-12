@@ -23,9 +23,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// IGNORED (and logged), never acted on: a fast second press used to call
     /// `reset()` while the previous `finish()` was still suspended inside the
     /// session actor, and actors are reentrant.
-    private enum Phase { case idle, starting, recording, finishing }
+    enum Mode: Equatable { case dictation, listen }
+    /// `paused` is Listen-only: capture stopped, session still armed.
+    private enum Phase: Equatable {
+        case idle, starting(Mode), recording(Mode), paused, finishing(Mode)
+    }
     private var phase: Phase = .idle
-    private var isRecording: Bool { phase == .recording }
+    /// Either mode is capturing (a paused Listen is not).
+    private var isRecording: Bool { if case .recording = phase { return true }; return false }
+    private var isDictating: Bool { phase == .recording(.dictation) }
+    private var isListening: Bool { phase == .recording(.listen) || phase == .paused }
     /// Secure Input holder lookup shells out to `ioreg`; cache it and resolve it off
     /// the main thread so opening the menu never stalls.
     private var secureHolderCache: (value: String?, at: Date)?
@@ -39,6 +46,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Running transcript for the panel preview; reset on every start.
     private var previewText = ""
     private var accessibilityPoll: Timer?
+
+    // MARK: Listen state
+    private let listenPanel = ListenPanel()
+    /// The transcript. The file on disk is the truth and the panel is a view of
+    /// it; both read from here and nothing else holds text.
+    private var listenDoc: TranscriptDocument?
+    private var listenURL: URL?
+    private var listenStartedAt: Date?
+    private var listenTitle = ""
+    private var pausedAt: Date?
+    private var pausedTotal: TimeInterval = 0
+    private var autosave: Timer?
+    private var listenCounter: Timer?
+    /// Consecutive engine failures in this Listen session; 3 in a row is a
+    /// wedged engine and gets a notification (see `handleListen`).
+    private var consecutiveFailures = 0
+    private var listenSaveErrorNotified = false
+    /// Listen counterpart of `lastOutcome`, one line in the menu.
+    private var lastSession: String?
+    /// Name of the engine behind `session`, for the transcript's frontmatter.
+    private var engineName = "unknown"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLog.write("launch — Spiel \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") pid \(ProcessInfo.processInfo.processIdentifier)")
@@ -172,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t0 = Date()
         do {
             self.session = try await makeSession(ParakeetTranscriber())
+            self.engineName = "parakeet-tdt-0.6b-v3"
             self.engineReady = true
             self.lastError = nil
             DiagnosticLog.write("engine ready: parakeet (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
@@ -182,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // degrade the app, not brick it.
             do {
                 self.session = try await makeSession(AppleSpeechTranscriber())
+                self.engineName = "apple-speechanalyzer"
                 self.engineReady = true
                 self.lastError = "Parakeet unavailable, using Apple SpeechAnalyzer"
                 DiagnosticLog.write("engine ready: apple SpeechAnalyzer (fallback)")
@@ -195,6 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handle(_ event: DictationSession.Event) {
+        // A Listen document outlives the recording phase (the done state, and a
+        // last segment whose text lands after finish), so route on the document,
+        // not on the phase.
+        if listenDoc != nil { handleListen(event); return }
         switch event {
         case .speechStarted:
             panel.setStatus("Listening…")
@@ -210,14 +244,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func handleListen(_ event: DictationSession.Event) {
+        guard var doc = listenDoc else { return }
+        switch event {
+        case .speechStarted, .segmentCaptured:
+            break
+        case .textReleased(let t, let at, let gap):
+            let before = doc.paragraphs.count
+            doc.append(text: t, startOffset: at, gapBefore: gap)
+            listenDoc = doc
+            consecutiveFailures = 0
+            listenPanel.setDocument(doc)
+            // Autosave on every paragraph break (plus the 30 s timer), so a crash
+            // costs at most the paragraph in progress.
+            if doc.paragraphs.count != before { saveListen() }
+        case .error(let e, let at, let secs):
+            lastError = e
+            DiagnosticLog.write("listen segment error: \(e)")
+            // A failed segment is a gap, not a stop: mark the hole and keep going.
+            doc.noteMissed(seconds: secs, atOffset: at)
+            listenDoc = doc
+            listenPanel.setDocument(doc)
+            consecutiveFailures += 1
+            if consecutiveFailures == 3 {
+                let msg = "the speech engine failed 3 segments in a row — it may be wedged; stop and restart Listen (the transcript so far is saved)"
+                DiagnosticLog.write("LISTEN: \(msg)")
+                Notifier.post(title: "Spiel Listen is losing speech", body: msg)
+            }
+            saveListen()
+        }
+    }
+
     // MARK: - Recording
 
     private func toggle() {
         switch phase {
         case .idle: start()
-        case .recording: stop()
+        case .recording(.dictation): stop()
+        case .recording(.listen), .paused:
+            // One AudioCapture, one session: dictation during Listen is refused
+            // with a reason, not multiplexed (design §5.1).
+            let mins = listenStartedAt.map { Int(Date().timeIntervalSince($0) / 60) } ?? 0
+            let msg = "Listen is running (\(mins) min) — stop it to dictate"
+            DiagnosticLog.write("dictation refused: \(msg)")
+            Notifier.post(title: "Spiel is listening", body: msg)
         case .starting, .finishing:
-            DiagnosticLog.write("hotkey ignored: dictation is \(phase == .starting ? "starting" : "finishing")")
+            DiagnosticLog.write("hotkey ignored: \(phase)")
+        }
+    }
+
+    private func toggleListen() {
+        switch phase {
+        case .idle: startListening()
+        case .recording(.listen), .paused: stopListening()
+        case .recording(.dictation):
+            DiagnosticLog.write("listen refused: dictation in progress")
+            Notifier.post(title: "Spiel is dictating", body: "Finish the dictation (⌘⇧D) before starting Listen")
+        case .starting, .finishing:
+            DiagnosticLog.write("listen hotkey ignored: \(phase)")
         }
     }
 
@@ -263,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // submitting, or the first buffers land in a disarmed sink. It is awaited,
         // not blocked on: the main actor stays free (menu, hotkey, UI), and a press
         // that lands in the gap is ignored by `toggle()` via `phase`.
-        phase = .starting
+        phase = .starting(.dictation)
         updateStatusItem()
         Task {
             // One task, in order: two separate Tasks against the same actor have no
@@ -272,14 +356,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // release would apply the OLD vocabulary to that segment's preview.
             await session.setGlossary(glossary)
             await session.reset()
-            await MainActor.run { self.beginCapture(session) }
+            await MainActor.run { self.beginCapture(session, mode: .dictation) }
         }
     }
 
-    private func beginCapture(_ session: DictationSession) {
-        guard phase == .starting else { return }
+    /// Opens the mic into `session`. Shared by both modes and by Listen's resume;
+    /// the capture handler is identical, only what happens after differs.
+    @discardableResult
+    private func openMicrophone(into session: DictationSession, mode: Mode) -> Bool {
         do {
-            try capture.start { [weak self] samples in
+            try capture.start(handler: { [weak self] samples in
                 guard let self else { return }
                 // Synchronous, ordered handoff — see AudioSink. A Task per buffer
                 // has no ordering guarantee and would shuffle mic audio.
@@ -293,21 +379,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // put normal speech at ~40% and Christopher asked for more motion.
                 let db = 20 * log10(max(rms, 1e-6))
                 let level = min(max((db + 48) / 30, 0), 1)
-                Task { @MainActor in self.panel.update(level: level) }
-            }
+                Task { @MainActor in
+                    if mode == .listen { self.listenPanel.update(level: level) } else { self.panel.update(level: level) }
+                }
+            }, onRouteChange: { [weak self] outcome in
+                // Called on the capture's private queue; hop to the main actor.
+                Task { @MainActor in self?.captureRouteChanged(outcome, session: session, mode: mode) }
+            })
+            return true
         } catch {
             DiagnosticLog.write("microphone failed to start: \(error)")
-            lastOutcome = "microphone failed to start: \(error)"
             Notifier.post(title: "Spiel could not open the microphone", body: "\(error)")
+            if mode == .listen { lastSession = "microphone failed to start: \(error)" }
+            else { lastOutcome = "microphone failed to start: \(error)" }
+            return false
+        }
+    }
+
+    private func beginCapture(_ session: DictationSession, mode: Mode) {
+        guard phase == .starting(mode) else { return }
+        guard openMicrophone(into: session, mode: mode) else {
             phase = .idle
             updateStatusItem()
             return
         }
-        phase = .recording
-        previewText = ""
-        panel.setTranscript("")
-        panel.show(status: "Listening…")
+        phase = .recording(mode)
+        switch mode {
+        case .dictation:
+            previewText = ""
+            panel.setTranscript("")
+            panel.show(status: "Listening…")
+        case .listen:
+            let doc = TranscriptDocument()
+            listenDoc = doc
+            listenURL = nil
+            listenStartedAt = Date()
+            pausedAt = nil
+            pausedTotal = 0
+            consecutiveFailures = 0
+            listenSaveErrorNotified = false
+            listenPanel.begin(title: listenTitle, document: doc)
+            listenPanel.onTitleChanged = { [weak self] title in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.listenTitle = title
+                    if self.listenDoc != nil { self.saveListen() }  // rename follows the title
+                }
+            }
+            listenPanel.onPause = { [weak self] in Task { @MainActor in self?.pauseListening() } }
+            listenPanel.onResume = { [weak self] in Task { @MainActor in self?.resumeListening() } }
+            listenPanel.onStop = { [weak self] in Task { @MainActor in self?.stopListening() } }
+            listenPanel.onCopy = { [weak self] in Task { @MainActor in self?.copyListen() } }
+            listenPanel.onOpen = { [weak self] in Task { @MainActor in self?.openListen() } }
+            autosave?.invalidate()
+            autosave = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.saveListen() }
+            }
+            listenCounter?.invalidate()
+            listenCounter = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tickListen() }
+            }
+            tickListen()
+            // First save immediately: an empty file with frontmatter is proof the
+            // folder is writable BEFORE an hour of transcript depends on it.
+            saveListen()
+        }
         updateStatusItem()
+    }
+
+    /// The audio route changed and capture restarted (or failed to).
+    private func captureRouteChanged(_ outcome: String, session: DictationSession, mode: Mode) {
+        guard self.session === session else { return }
+        let failed = outcome.hasPrefix("could not restart capture")
+        DiagnosticLog.write("route change (\(mode)): \(outcome)")
+        guard mode == .listen, var doc = listenDoc, isListening else {
+            if failed { lastError = outcome }
+            return
+        }
+        Task {
+            let at = await session.audioSeconds
+            await session.noteCaptureRestart()
+            await MainActor.run {
+                if failed {
+                    doc.noteCaptureRestart(device: "nothing — \(outcome)", atOffset: at)
+                    self.listenDoc = doc
+                    self.listenPanel.setDocument(doc)
+                    self.saveListen()
+                    Notifier.post(title: "Spiel Listen stopped",
+                                  body: "input device changed and could not restart (\(outcome)). The transcript so far is saved.")
+                    self.stopListening()
+                } else {
+                    doc.noteCaptureRestart(device: outcome, atOffset: at)
+                    self.listenDoc = doc
+                    self.listenPanel.setDocument(doc)
+                    self.saveListen()
+                    // No notification on a successful restart: the marker and the
+                    // counter are the signal, and a mid-meeting alert is noise.
+                }
+            }
+        }
     }
 
     private func micDenied() {
@@ -332,10 +502,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var secureInputSeenThisDictation = false
 
     private func stop() {
-        guard let session, phase == .recording else { return }
+        guard phase == .recording(.dictation) else { return }
+        finish(mode: .dictation)
+    }
+
+    /// Ends either mode: stop the mic, drain the session, deliver. The watchdog
+    /// is the same for both — on a hung engine a dictation is lost, a Listen keeps
+    /// its last autosave and says so.
+    private func finish(mode: Mode) {
+        guard let session else { return }
         capture.stop()
-        phase = .finishing
-        panel.setStatus("Finishing…")
+        autosave?.invalidate(); autosave = nil
+        phase = .finishing(mode)
+        if mode == .dictation { panel.setStatus("Finishing…") } else { listenPanel.setFinishing() }
         updateStatusItem()
         finishGeneration += 1
         let generation = finishGeneration
@@ -345,7 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // A finish that comes back after the watchdog already replaced the
                 // session is stale: its text would be delivered into whatever he is
                 // doing now, a minute later.
-                guard self.finishGeneration == generation, self.phase == .finishing else {
+                guard self.finishGeneration == generation, self.phase == .finishing(mode) else {
                     DiagnosticLog.write(
                         "stale finish ignored (watchdog already fired) — text was: "
                             + self.quotedForLog(report.text),
@@ -353,20 +532,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     return
                 }
-                self.panel.hide()
                 self.phase = .idle
-                self.deliver(report)
+                switch mode {
+                case .dictation:
+                    self.panel.hide()
+                    self.deliver(report)
+                case .listen:
+                    self.deliverTranscript(report)
+                }
             }
         }
         Task {
             try? await Task.sleep(nanoseconds: Self.finishWatchdogSeconds * 1_000_000_000)
             await MainActor.run {
-                guard self.finishGeneration == generation, self.phase == .finishing else { return }
-                let msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; that dictation is lost"
+                guard self.finishGeneration == generation, self.phase == .finishing(mode) else { return }
+                let msg: String
+                switch mode {
+                case .dictation:
+                    msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; that dictation is lost"
+                    self.panel.hide()
+                    self.lastOutcome = msg
+                case .listen:
+                    let upTo = self.listenDoc?.paragraphs.last.map { TranscriptDocument.formatOffset($0.offset) } ?? "00:00"
+                    msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; the transcript is saved up to \(upTo)"
+                    self.saveListen()
+                    self.listenCounter?.invalidate(); self.listenCounter = nil
+                    self.lastSession = "saved up to \(upTo), engine hung"
+                    self.listenPanel.setDone(summary: "saved up to \(upTo) · engine hung", document: self.listenDoc ?? TranscriptDocument())
+                }
                 DiagnosticLog.write("WATCHDOG: \(msg)")
-                self.panel.hide()
                 self.phase = .idle
-                self.lastOutcome = msg
                 self.lastError = msg
                 // Drop the wedged session and build a fresh one; the old one's tasks
                 // are abandoned, not awaited (awaiting is the thing that hung).
@@ -377,6 +572,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { await self.warmUp() }
             }
         }
+    }
+
+    // MARK: - Listen
+
+    private func startListening() {
+        guard engineReady, let session else {
+            let why = lastError ?? "the speech engine is still loading"
+            DiagnosticLog.write("listen refused: \(why)")
+            Notifier.post(title: "Spiel is not ready", body: why)
+            return
+        }
+        switch AudioCapture.microphoneAuthorization() {
+        case .authorized:
+            break
+        case .notDetermined:
+            DiagnosticLog.write("listen: microphone permission not determined — prompting")
+            Task {
+                let granted = await AudioCapture.requestMicrophoneAccess()
+                DiagnosticLog.write("microphone permission prompt → \(granted ? "granted" : "denied")")
+                if granted { self.startListening() } else { self.micDenied() }
+            }
+            return
+        case .denied, .restricted:
+            micDenied()
+            return
+        }
+        let glossary = Glossary.load()
+        // No captureFrontmostApp() and no Secure Input latch: Listen never pastes
+        // and has no target field (design §5.6). The frontmost window title is
+        // read for the default session title only.
+        listenTitle = WindowTitle.frontmost() ?? ""
+        DiagnosticLog.write("listen start: title = \"\(listenTitle)\", input device = \(AudioCapture.defaultInputDeviceName()), vocabulary = \(glossary.count) aliases")
+        phase = .starting(.listen)
+        updateStatusItem()
+        Task {
+            await session.setGlossary(glossary)
+            await session.reset()
+            await MainActor.run { self.beginCapture(session, mode: .listen) }
+        }
+    }
+
+    private func stopListening() {
+        guard isListening else { return }
+        if phase == .paused { closePause() }  // a stop while paused still books the pause
+        finish(mode: .listen)
+    }
+
+    private func pauseListening() {
+        guard phase == .recording(.listen) else { return }
+        capture.stop()
+        pausedAt = Date()
+        phase = .paused
+        listenPanel.setPaused(true)
+        DiagnosticLog.write("listen paused")
+        updateStatusItem()
+    }
+
+    /// Books the pause span onto the session and the document. The document's
+    /// marker sits at the current audio offset, so it lands on the timeline
+    /// between the speech before and after it.
+    private func closePause() {
+        guard let session, let pausedAt else { return }
+        let span = Date().timeIntervalSince(pausedAt)
+        self.pausedAt = nil
+        pausedTotal += span
+        Task {
+            let at = await session.audioSeconds
+            await session.notePause(seconds: span)
+            await MainActor.run {
+                guard var doc = self.listenDoc else { return }
+                doc.notePause(seconds: span, atOffset: at)
+                self.listenDoc = doc
+                self.listenPanel.setDocument(doc)
+                self.saveListen()
+            }
+        }
+    }
+
+    private func resumeListening() {
+        guard phase == .paused, let session else { return }
+        closePause()
+        // The session stayed armed through the pause, so no reset() and no lost
+        // tail — just open the mic into it again.
+        guard openMicrophone(into: session, mode: .listen) else {
+            // The mic would not reopen: end the session with what we have.
+            DiagnosticLog.write("listen resume: microphone failed — stopping")
+            finish(mode: .listen)
+            return
+        }
+        phase = .recording(.listen)
+        listenPanel.setPaused(false)
+        DiagnosticLog.write("listen resumed")
+        updateStatusItem()
+    }
+
+    private func tickListen() {
+        guard let started = listenStartedAt, let doc = listenDoc, isListening else { return }
+        let elapsed = Date().timeIntervalSince(started)
+        listenPanel.setCounter(elapsed: elapsed, words: doc.wordCount, paused: phase == .paused)
+    }
+
+    private func listenFrontmatter(endedAt: Date) -> TranscriptDocument.Frontmatter {
+        TranscriptDocument.Frontmatter(
+            title: listenTitle, startedAt: listenStartedAt ?? endedAt, endedAt: endedAt,
+            version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev")",
+            inputDevice: AudioCapture.defaultInputDeviceName(), engine: engineName
+        )
+    }
+
+    /// Autosave. The file is written under the CURRENT title; a title change moves
+    /// it (`replacing:`). Failure is surfaced once per session, not once per 30 s.
+    private func saveListen() {
+        guard let doc = listenDoc, let started = listenStartedAt else { return }
+        let text = doc.render(frontmatter: listenFrontmatter(endedAt: Date()))
+        let url = TranscriptStore.url(for: listenTitle, startedAt: started, current: listenURL)
+        do {
+            try TranscriptStore.save(text, to: url, replacing: listenURL)
+            listenURL = url
+        } catch {
+            lastError = "transcript autosave failed: \(error)"
+            DiagnosticLog.write("LISTEN: autosave FAILED: \(error)")
+            if !listenSaveErrorNotified {
+                listenSaveErrorNotified = true
+                Notifier.post(title: "Spiel cannot save the transcript",
+                              body: "\(error). Listen keeps going; Copy from the panel when you stop.")
+            }
+        }
+    }
+
+    private func deliverTranscript(_ report: DictationSession.Report) {
+        listenCounter?.invalidate(); listenCounter = nil
+        if report.droppedBuffers > 0 {
+            DiagnosticLog.write("WARNING: \(report.droppedBuffers) audio buffers were dropped (sink not armed)")
+        }
+        let doc = listenDoc ?? TranscriptDocument()
+        saveListen()
+        let mins = Int(report.endedAt.timeIntervalSince(report.startedAt) / 60)
+        let words = doc.wordCount
+        let file = listenURL?.lastPathComponent ?? "(not saved — \(lastError ?? "unknown error"))"
+        var summary = "\(mins) min · \(words.formatted()) words · saved"
+        if listenURL == nil { summary = "\(mins) min · \(words.formatted()) words · NOT SAVED" }
+        if !report.errors.isEmpty { summary += " · \(report.errors.count) missed" }
+        lastSession = "\(mins) min, \(words.formatted()) words, \(listenURL == nil ? "NOT saved" : "saved to \(file)")"
+        DiagnosticLog.write("listen finished: \(lastSession!) (\(report.diagnosis); restarts \(report.captureRestarts), paused \(Int(report.pausedSeconds)) s)")
+        listenPanel.setDone(summary: summary, document: doc)
+        updateStatusItem()
+    }
+
+    private func copyListen() {
+        guard let doc = listenDoc else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(doc.body(plain: true), forType: .string)
+        listenPanel.flashCopied()
+    }
+
+    private func openListen() {
+        saveListen()
+        if let url = listenURL { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func openTranscriptsFolder() {
+        let folder = TranscriptStore.defaultFolder
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
     }
 
     /// Every dictation ends with ONE line saying what happened — inserted where and
@@ -437,15 +797,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
         let symbol: String
-        if isRecording {
+        if isDictating {
             symbol = "mic.fill"
+        } else if phase == .recording(.listen) {
+            symbol = "waveform"   // must look different from dictation: this one records other people
+        } else if phase == .paused {
+            symbol = "pause.circle"
         } else if !hotkeyStatus.isHealthy || !listenHotkeyStatus.isHealthy || !engineReady {
             symbol = "exclamationmark.triangle.fill"  // never look healthy when we aren't
         } else {
             symbol = "mic"
         }
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Spiel")
-        button.image?.isTemplate = !isRecording
+        button.image?.isTemplate = !(isRecording || phase == .paused)
         rebuildMenu(statusItem.menu ?? NSMenu())
     }
 
@@ -506,6 +870,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Last dictation: \(lastOutcome ?? "none yet")", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Last session: \(lastSession ?? "none yet")", action: nil, keyEquivalent: "")
+        let folderItem = NSMenuItem(title: "Open Transcripts Folder", action: #selector(openTranscriptsFolder), keyEquivalent: "")
+        folderItem.target = self
+        menu.addItem(folderItem)
         let vocabItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
         vocabItem.target = self
         menu.addItem(vocabItem)
@@ -553,11 +921,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         let toggleItem = NSMenuItem(
-            title: isRecording ? "Stop Dictation" : "Start Dictation",
+            title: isDictating ? "Stop Dictation" : "Start Dictation",
             action: #selector(menuToggle), keyEquivalent: ""
         )
         toggleItem.target = self
         menu.addItem(toggleItem)
+        switch phase {
+        case .recording(.listen):
+            let pauseItem = NSMenuItem(title: "Pause Listening", action: #selector(menuPauseListen), keyEquivalent: "")
+            pauseItem.target = self
+            menu.addItem(pauseItem)
+            let stopItem = NSMenuItem(title: "Stop Listening", action: #selector(menuToggleListen), keyEquivalent: "")
+            stopItem.target = self
+            menu.addItem(stopItem)
+        case .paused:
+            let resumeItem = NSMenuItem(title: "Resume Listening", action: #selector(menuResumeListen), keyEquivalent: "")
+            resumeItem.target = self
+            menu.addItem(resumeItem)
+            let stopItem = NSMenuItem(title: "Stop Listening", action: #selector(menuToggleListen), keyEquivalent: "")
+            stopItem.target = self
+            menu.addItem(stopItem)
+        default:
+            let listenItem = NSMenuItem(title: "Start Listening", action: #selector(menuToggleListen), keyEquivalent: "")
+            listenItem.target = self
+            menu.addItem(listenItem)
+        }
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Spiel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -633,6 +1021,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + "accessibility effective: \(TextInserter.hasAccessibilityPermission()); "
             + "secure input: \(TextInserter.isSecureInputEnabled()); "
             + "open at login: \(LaunchAtLogin.label(LaunchAtLogin.state())); "
+            + "transcripts folder: \(TranscriptStore.defaultFolder.path); last session: \(lastSession ?? "none yet"); "
             + "last outcome: \(lastOutcome ?? "none yet"); last error: \(lastError ?? "none"); "
             + "signature: \(Self.signatureSummary())"
     }
@@ -663,6 +1052,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func menuToggle() { toggle() }
+    @objc private func menuToggleListen() { toggleListen() }
+    @objc private func menuPauseListen() { pauseListening() }
+    @objc private func menuResumeListen() { resumeListening() }
     @objc private func retryHotkey() {
         hotkeys.register(.dictation, .defaultCombo) { [weak self] in
             Task { @MainActor in self?.toggle() }
@@ -679,8 +1071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.toggleListen() }
         }
     }
-    // Placeholder until step 5 wires the Listen state machine.
-    private func toggleListen() {}
+
     @objc private func grantAccessibility() {
         TextInserter.requestAccessibilityPermission()
         startAccessibilityPoll()
