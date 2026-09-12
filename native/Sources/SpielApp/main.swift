@@ -54,6 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var listenDoc: TranscriptDocument?
     private var listenURL: URL?
     private var listenStartedAt: Date?
+    /// Fixed at finish so a title edit in the done state re-renders the same
+    /// `ended:` instead of "now".
+    private var listenEndedAt: Date?
+    /// Which handler session events go to. Set with the mode at capture start —
+    /// not derived from `listenDoc`, which outlives the session for the done
+    /// state's Copy/Open and would otherwise swallow the next dictation's events.
+    private var eventsGoToListen = false
     private var listenTitle = ""
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
@@ -225,10 +232,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handle(_ event: DictationSession.Event) {
-        // A Listen document outlives the recording phase (the done state, and a
-        // last segment whose text lands after finish), so route on the document,
-        // not on the phase.
-        if listenDoc != nil { handleListen(event); return }
+        // Routed by the mode that opened the mic, not by phase: a Listen session's
+        // last segment can land after `finish` returns, and it still belongs to
+        // the Listen document.
+        if eventsGoToListen { handleListen(event); return }
         switch event {
         case .speechStarted:
             panel.setStatus("Listening…")
@@ -256,8 +263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             consecutiveFailures = 0
             listenPanel.setDocument(doc)
             // Autosave on every paragraph break (plus the 30 s timer), so a crash
-            // costs at most the paragraph in progress.
-            if doc.paragraphs.count != before { saveListen() }
+            // costs at most the paragraph in progress. After the session has
+            // finished there is no timer, so a late-landing segment saves at once.
+            if doc.paragraphs.count != before || !isListening { saveListen() }
         case .error(let e, let at, let secs):
             lastError = e
             DiagnosticLog.write("listen segment error: \(e)")
@@ -348,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // not blocked on: the main actor stays free (menu, hotkey, UI), and a press
         // that lands in the gap is ignored by `toggle()` via `phase`.
         phase = .starting(.dictation)
+        eventsGoToListen = false
         updateStatusItem()
         Task {
             // One task, in order: two separate Tasks against the same actor have no
@@ -411,9 +420,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.show(status: "Listening…")
         case .listen:
             let doc = TranscriptDocument()
+            eventsGoToListen = true
             listenDoc = doc
             listenURL = nil
             listenStartedAt = Date()
+            listenEndedAt = nil
             pausedAt = nil
             pausedTotal = 0
             consecutiveFailures = 0
@@ -555,6 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .listen:
                     let upTo = self.listenDoc?.paragraphs.last.map { TranscriptDocument.formatOffset($0.offset) } ?? "00:00"
                     msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; the transcript is saved up to \(upTo)"
+                    self.listenEndedAt = Date()
                     self.saveListen()
                     self.listenCounter?.invalidate(); self.listenCounter = nil
                     self.lastSession = "saved up to \(upTo), engine hung"
@@ -685,7 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it (`replacing:`). Failure is surfaced once per session, not once per 30 s.
     private func saveListen() {
         guard let doc = listenDoc, let started = listenStartedAt else { return }
-        let text = doc.render(frontmatter: listenFrontmatter(endedAt: Date()))
+        let text = doc.render(frontmatter: listenFrontmatter(endedAt: listenEndedAt ?? Date()))
         let url = TranscriptStore.url(for: listenTitle, startedAt: started, current: listenURL)
         do {
             try TranscriptStore.save(text, to: url, replacing: listenURL)
@@ -707,6 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DiagnosticLog.write("WARNING: \(report.droppedBuffers) audio buffers were dropped (sink not armed)")
         }
         let doc = listenDoc ?? TranscriptDocument()
+        listenEndedAt = report.endedAt
         saveListen()
         let mins = Int(report.endedAt.timeIntervalSince(report.startedAt) / 60)
         let words = doc.wordCount
