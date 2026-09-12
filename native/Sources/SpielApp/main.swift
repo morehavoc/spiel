@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var secureHolderCache: (value: String?, at: Date)?
     private var secureHolderLookupRunning = false
     private var hotkeyStatus: HotkeyManager.Status = .unregistered
+    private var listenHotkeyStatus: HotkeyManager.Status = .unregistered
     private var lastError: String?
     /// What the last dictation did, in one line. Lives in the menu because the menu
     /// is the only surface the user actually opens when "nothing happened".
@@ -84,14 +85,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startAccessibilityPoll()
         }
 
-        hotkeys.setStatusHandler { [weak self] status in
+        hotkeys.setStatusHandler { [weak self] id, status in
             Task { @MainActor in
-                self?.hotkeyStatus = status
-                self?.updateStatusItem()
+                guard let self else { return }
+                switch id {
+                case .dictation: self.hotkeyStatus = status
+                case .listen: self.listenHotkeyStatus = status
+                }
+                // Not a console log. A dead hotkey must be visible.
+                if case .failed(let desc, let reason) = status {
+                    Notifier.post(
+                        title: "Spiel hotkey is not active",
+                        body: "\(desc) could not be registered: \(reason). Pick a different shortcut from the Spiel menu."
+                    )
+                }
+                self.updateStatusItem()
             }
         }
-        hotkeys.register(.defaultCombo) { [weak self] in
+        hotkeys.register(.dictation, .defaultCombo) { [weak self] in
             Task { @MainActor in self?.toggle() }
+        }
+        hotkeys.register(.listen, .listen) { [weak self] in
+            Task { @MainActor in self?.toggleListen() }
         }
 
         // Warm the model at launch, not on first keypress. A cold Parakeet load is
@@ -424,7 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbol: String
         if isRecording {
             symbol = "mic.fill"
-        } else if !hotkeyStatus.isHealthy || !engineReady {
+        } else if !hotkeyStatus.isHealthy || !listenHotkeyStatus.isHealthy || !engineReady {
             symbol = "exclamationmark.triangle.fill"  // never look healthy when we aren't
         } else {
             symbol = "mic"
@@ -451,6 +466,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(alt)
         case .unregistered:
             menu.addItem(withTitle: "Hotkey: not registered", action: nil, keyEquivalent: "")
+        }
+        switch listenHotkeyStatus {
+        case .registered(let desc):
+            menu.addItem(withTitle: "Listen: \(desc)", action: nil, keyEquivalent: "")
+        case .failed(let desc, let reason):
+            let item = NSMenuItem(
+                title: "⚠︎ Listen hotkey \(desc) NOT active — \(reason)",
+                action: #selector(retryListenHotkey), keyEquivalent: ""
+            )
+            item.target = self
+            menu.addItem(item)
+        case .unregistered:
+            menu.addItem(withTitle: "Listen: not registered", action: nil, keyEquivalent: "")
         }
 
         menu.addItem(.separator())
@@ -593,8 +621,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .failed(let d, let why): hotkey = "\(d) NOT active — \(why)"
         case .unregistered: hotkey = "not registered"
         }
+        let listenKey: String
+        switch listenHotkeyStatus {
+        case .registered(let d): listenKey = d
+        case .failed(let d, let why): listenKey = "\(d) NOT active — \(why)"
+        case .unregistered: listenKey = "not registered"
+        }
         return "snapshot — Spiel \(version) pid \(ProcessInfo.processInfo.processIdentifier); "
-            + "hotkey: \(hotkey); engine: \(engineReady ? "ready" : "loading"); "
+            + "hotkey: \(hotkey); listen hotkey: \(listenKey); engine: \(engineReady ? "ready" : "loading"); "
             + "microphone: \(AudioCapture.microphoneAuthorization().rawValue), input device: \(AudioCapture.defaultInputDeviceName()); "
             + "accessibility effective: \(TextInserter.hasAccessibilityPermission()); "
             + "secure input: \(TextInserter.isSecureInputEnabled()); "
@@ -630,15 +664,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func menuToggle() { toggle() }
     @objc private func retryHotkey() {
-        hotkeys.register(.defaultCombo) { [weak self] in
+        hotkeys.register(.dictation, .defaultCombo) { [weak self] in
             Task { @MainActor in self?.toggle() }
         }
     }
+    /// F5 is the dictation fallback only; Listen has no fallback key.
     @objc private func useF5() {
-        hotkeys.register(.f5) { [weak self] in
+        hotkeys.register(.dictation, .f5) { [weak self] in
             Task { @MainActor in self?.toggle() }
         }
     }
+    @objc private func retryListenHotkey() {
+        hotkeys.register(.listen, .listen) { [weak self] in
+            Task { @MainActor in self?.toggleListen() }
+        }
+    }
+    // Placeholder until step 5 wires the Listen state machine.
+    private func toggleListen() {}
     @objc private func grantAccessibility() {
         TextInserter.requestAccessibilityPermission()
         startAccessibilityPoll()

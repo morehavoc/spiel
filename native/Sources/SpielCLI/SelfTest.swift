@@ -237,6 +237,85 @@ enum SelfTest {
         }
     }
 
+    /// A backend that records what the manager asked for and can be told to fail
+    /// one id. No real Carbon registration happens here — that would take ⌘⇧D away
+    /// from the running app.
+    final class StubHotkeyBackend: HotkeyManager.Backend {
+        var registered: [UInt32: HotkeyManager.Combo] = [:]
+        var failIds: Set<UInt32> = []
+        var handlerInstalls = 0
+        var route: ((UInt32) -> Void)?
+        final class Tok { let id: UInt32; init(_ i: UInt32) { id = i } }
+        func installHandler(_ route: @escaping (UInt32) -> Void) -> Result<Void, HotkeyManager.RegisterError> {
+            handlerInstalls += 1; self.route = route; return .success(())
+        }
+        func register(_ combo: HotkeyManager.Combo, id: UInt32) -> Result<AnyObject, HotkeyManager.RegisterError> {
+            if failIds.contains(id) { return .failure(.taken) }
+            registered[id] = combo
+            return .success(Tok(id))
+        }
+        func unregister(_ token: AnyObject) { if let t = token as? Tok { registered[t.id] = nil } }
+        func removeHandler() { route = nil }
+    }
+
+    static func hotkeyRoutingTests() {
+        print("\nHotkeyManager — two ids, routed on EventHotKeyID, failures isolated")
+        let backend = StubHotkeyBackend()
+        let mgr = HotkeyManager(backend: backend)
+        var fired: [String] = []
+        var statuses: [String] = []
+        mgr.setStatusHandler { id, st in statuses.append("\(id):\(st.isHealthy ? "ok" : "no")") }
+        expect(statuses.sorted().joined(separator: ","), "dictation:no,listen:no", "status handler reports both ids on install")
+
+        mgr.register(.dictation, .defaultCombo) { fired.append("dictation") }
+        mgr.register(.listen, .listen) { fired.append("listen") }
+        expect(mgr.status(.dictation).isHealthy && mgr.status(.listen).isHealthy ? "ok" : "no", "ok", "both hotkeys register")
+        expectInt(backend.handlerInstalls, 1, "the Carbon event handler is installed once, not per hotkey")
+        expect(backend.registered[1]?.description ?? "nil", "⌘⇧D", "id 1 is dictation ⌘⇧D")
+        expect(backend.registered[2]?.description ?? "nil", "⌘⇧L", "id 2 is Listen ⌘⇧L")
+
+        // Route through the SAME closure the Carbon callback would call.
+        backend.route?(2)
+        expect(fired.joined(separator: ","), "listen", "a synthetic event with id 2 fires only the Listen handler")
+        backend.route?(1)
+        expect(fired.joined(separator: ","), "listen,dictation", "id 1 fires only the dictation handler")
+        backend.route?(7)
+        expect(fired.joined(separator: ","), "listen,dictation", "an unknown id fires nothing")
+
+        // Failure of id 2 leaves id 1 registered and working.
+        fired.removeAll()
+        backend.failIds = [2]
+        let st = mgr.register(.listen, .listen) { fired.append("listen") }
+        expect(st.isHealthy ? "healthy" : "failed", "failed", "a taken Listen combo reports failure")
+        if case .failed(let d, let reason) = st {
+            expect(d, "⌘⇧L", "…naming the combo")
+            expect(reason.contains("another app already owns") ? "ok" : reason, "ok", "…and the reason")
+        }
+        expect(mgr.status(.dictation).isHealthy ? "ok" : "lost", "ok", "dictation stays registered when Listen fails")
+        expect(backend.registered[1] != nil ? "ok" : "gone", "ok", "…and its Carbon registration was not touched")
+        backend.route?(1)
+        expect(fired.joined(separator: ","), "dictation", "dictation still fires after the Listen failure")
+        backend.route?(2)
+        expect(fired.joined(separator: ","), "dictation", "a failed id does not fire a stale handler")
+
+        // Re-registering one id (F5 fallback) replaces only that id.
+        backend.failIds = []
+        mgr.register(.listen, .listen) { fired.append("listen") }
+        mgr.register(.dictation, .f5) { fired.append("f5") }
+        expect(backend.registered[1]?.description ?? "nil", "F5", "the F5 fallback replaces the dictation combo")
+        expect(backend.registered[2]?.description ?? "nil", "⌘⇧L", "…and leaves Listen on ⌘⇧L")
+        fired.removeAll()
+        backend.route?(1); backend.route?(2)
+        expect(fired.joined(separator: ","), "f5,listen", "after the swap both ids route to their current handlers")
+        expectInt(backend.registered.count, 2, "no leaked registrations after re-registering")
+
+        mgr.unregisterAll()
+        expectInt(backend.registered.count, 0, "unregisterAll releases every registration")
+        expect(backend.route == nil ? "removed" : "kept", "removed", "unregisterAll removes the event handler")
+        expect(HotkeyManager.Id.listen.rawValue == 2 && HotkeyManager.Id.dictation.rawValue == 1 ? "ok" : "no", "ok",
+               "ids are the EventHotKeyID values the Carbon callback reads back (1 dictation, 2 listen)")
+    }
+
     static func transcriptDocumentTests() {
         print("\nTranscriptDocument — paragraphs, markers, offsets, rendering")
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
@@ -838,6 +917,7 @@ enum SelfTest {
         await listenTimingTests()
         transcriptDocumentTests()
         transcriptStoreTests()
+        hotkeyRoutingTests()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
