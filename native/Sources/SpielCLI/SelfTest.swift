@@ -237,6 +237,144 @@ enum SelfTest {
         }
     }
 
+    static func transcriptDocumentTests() {
+        print("\nTranscriptDocument — paragraphs, markers, offsets, rendering")
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        var doc = TranscriptDocument()
+        doc.append(text: "Okay so the first thing", startOffset: 0.5, gapBefore: 0.5, now: t0)
+        doc.append(text: "is the Gresham RFP.", startOffset: 3.0, gapBefore: 0.8, now: t0)
+        expectInt(doc.paragraphs.count, 1, "a short gap extends the current paragraph")
+        expect(doc.paragraphs[0].text, "Okay so the first thing is the Gresham RFP.", "segments join with a space")
+        doc.append(text: "Second topic.", startOffset: 41.0, gapBefore: 2.0, now: t0)
+        expectInt(doc.paragraphs.count, 2, "a gap of exactly paragraphGap starts a new paragraph")
+        expect(TranscriptDocument.formatOffset(doc.paragraphs[1].offset), "00:41", "paragraph offset is its first segment's onset")
+        doc.append(text: "Still second.", startOffset: 43.0, gapBefore: 1.99, now: t0)
+        expectInt(doc.paragraphs.count, 2, "1.99 s stays in the paragraph")
+
+        // Monologue cap: one speaker, no 2 s gap for two minutes.
+        var mono = TranscriptDocument()
+        var at = 0.0
+        var n = 0
+        while at < 120 { mono.append(text: "w\(n)", startOffset: at, gapBefore: 0.5, now: t0); at += 10; n += 1 }
+        expectInt(mono.paragraphs.count, 2, "a 120 s monologue with no gaps is split by the 90 s cap")
+        expect(mono.paragraphs.count > 1 ? TranscriptDocument.formatOffset(mono.paragraphs[1].offset) : "unsplit", "01:30",
+               "the cap splits at the first segment past 90 s")
+
+        // Markers are their own paragraphs and never get speech glued on.
+        var m = TranscriptDocument()
+        m.append(text: "Before.", startOffset: 10, gapBefore: 10, now: t0)
+        m.noteCaptureRestart(device: "AirPods Pro", atOffset: 31 * 60 + 7, now: t0)
+        m.append(text: "After.", startOffset: 31 * 60 + 9, gapBefore: 0.3, now: t0)
+        expectInt(m.paragraphs.count, 3, "a marker sits between two paragraphs even with a short gap after it")
+        expect(m.paragraphs[1].text, "[input changed to AirPods Pro at 31:07]", "capture-restart marker text")
+        expect(m.paragraphs[1].isMarker ? "marker" : "text", "marker", "the marker paragraph is flagged")
+        expect(m.paragraphs.last?.text ?? "nil", "After.", "speech after a marker starts fresh, not appended to the marker")
+        m.noteMissed(seconds: 8.2, atOffset: 40 * 60, now: t0)
+        expect(m.paragraphs.last?.text ?? "nil", "[missed ~8 s at 40:00]", "missed-segment marker text")
+        expectInt(m.wordCount, 2, "wordCount ignores marker lines")
+
+        // Pause correction: a 4-minute pause at 20:00 shifts every later offset.
+        var pz = TranscriptDocument()
+        pz.append(text: "Before the pause.", startOffset: 19 * 60, gapBefore: 5, now: t0)
+        pz.notePause(seconds: 240, atOffset: 20 * 60, now: t0)
+        pz.append(text: "After the pause.", startOffset: 20 * 60 + 5, gapBefore: 5, now: t0)
+        expectInt(pz.paragraphs.count, 3, "pause marker + two paragraphs")
+        guard pz.paragraphs.count == 3 else { return }
+        expect(pz.paragraphs[1].text, "[paused 4 min]", "pause marker text")
+        expect(TranscriptDocument.formatOffset(pz.paragraphs[1].offset), "20:00", "pause marker sits at the pause")
+        expect(TranscriptDocument.formatOffset(pz.paragraphs[2].offset), "24:05", "offsets after a pause include the paused time (wall-clock-true)")
+        expect(TranscriptDocument.formatOffset(pz.paragraphs[0].offset), "19:00", "offsets before the pause are untouched")
+        pz.notePause(seconds: 0, atOffset: 25 * 60, now: t0)
+        expectInt(pz.paragraphs.count, 3, "a zero-length pause writes no marker")
+
+        // Render + round trip.
+        let started = t0
+        let ended = t0.addingTimeInterval(3154)
+        let fm = TranscriptDocument.Frontmatter(title: "Projects Weekly: Q3", startedAt: started, endedAt: ended,
+                                                version: "2.1.0", inputDevice: "Yeti Stereo Microphone", engine: "parakeet-tdt-0.6b-v3")
+        let rendered = pz.render(frontmatter: fm)
+        expect(rendered.hasPrefix("---\napp: Spiel\n") ? "ok" : String(rendered.prefix(20)), "ok", "render starts with YAML frontmatter")
+        guard let parsed = TranscriptDocument.parseFrontmatter(rendered) else {
+            expect("nil", "parsed", "rendered frontmatter parses"); return
+        }
+        expect(parsed.fields["title"] ?? "nil", "Projects Weekly: Q3", "a title with a colon round-trips (quoted in YAML)")
+        expect(parsed.fields["duration_s"] ?? "nil", "3154", "duration_s is ended − started")
+        expect(parsed.fields["words"] ?? "nil", "6", "words is the speech word count")
+        expect(parsed.fields["kind"] ?? "nil", "transcript", "kind: transcript")
+        expect(parsed.fields["source"] ?? "nil", "microphone", "source: microphone")
+        expect(parsed.fields["engine"] ?? "nil", "parakeet-tdt-0.6b-v3", "engine round-trips")
+        let iso = parsed.fields["started"] ?? ""
+        expect(iso.count == 25 && (iso.hasSuffix("Z") == false) && (iso.contains("+") || iso.dropFirst(19).contains("-")) ? "ok" : iso, "ok",
+               "started is ISO 8601 with a numeric UTC offset, never naive local time")
+        let f = ISO8601DateFormatter()
+        expect(f.date(from: iso).map { String(format: "%.0f", $0.timeIntervalSince1970) } ?? "unparsed",
+               String(format: "%.0f", started.timeIntervalSince1970), "started parses back to the same instant")
+        expect(parsed.body.hasPrefix("[19:00] Before the pause.") ? "ok" : String(parsed.body.prefix(30)), "ok", "body follows the frontmatter with [MM:SS] paragraphs")
+        expect(parsed.body.contains("\n\n[paused 4 min]\n\n") ? "ok" : "missing", "ok", "paragraphs are separated by a blank line")
+        expect(pz.body(plain: true), "Before the pause.\n\nAfter the pause.", "plain body drops offsets and markers (for Copy)")
+        expect(TranscriptDocument.parseFrontmatter("no frontmatter here") == nil ? "nil" : "parsed", "nil", "text without frontmatter does not parse as one")
+        expect(TranscriptDocument.formatOffset(75 * 60 + 12), "75:12", "offsets past an hour stay MM:SS")
+        expect(TranscriptDocument.formatDuration(45), "45 s", "duration under a minute")
+        expect(TranscriptDocument.formatDuration(72 * 60), "1 h 12 min", "duration over an hour")
+        expect(pz.lastParagraphAge(now: t0.addingTimeInterval(31)).map { String(Int($0)) } ?? "nil", "31", "lastParagraphAge is measured from the newest append")
+        expect(TranscriptDocument().lastParagraphAge() == nil ? "nil" : "value", "nil", "an empty document has no last-paragraph age")
+        var e = TranscriptDocument()
+        e.append(text: "   ", startOffset: 1, gapBefore: 1, now: t0)
+        expectInt(e.paragraphs.count, 0, "whitespace-only text is not appended")
+    }
+
+    static func transcriptStoreTests() {
+        print("\nTranscriptStore — naming, collisions, atomic writes")
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let stamp: String = {
+            let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd HHmm"; return f.string(from: t0)
+        }()
+        expect(TranscriptStore.fileName(title: "Projects Weekly", startedAt: t0), "\(stamp) Projects Weekly.md", "file name is local start stamp + title")
+        expect(TranscriptStore.fileName(title: "", startedAt: t0), "\(stamp) Untitled.md", "empty title → Untitled")
+        expect(TranscriptStore.fileName(title: "   ", startedAt: t0), "\(stamp) Untitled.md", "whitespace title → Untitled")
+        expect(TranscriptStore.sanitize("Sync: a/b \\ c\nd"), "Sync- a-b - c-d", "/, :, \\ and newlines become -")
+        expect(TranscriptStore.sanitize("...hidden"), "hidden", "a leading dot is stripped so the file is not hidden")
+        expectInt(TranscriptStore.sanitize(String(repeating: "x", count: 200)).count, 80, "titles are clipped to 80 characters")
+
+        let folder = URL(fileURLWithPath: "/tmp/spiel-store-test")
+        let taken = Set([folder.appendingPathComponent("\(stamp) Weekly.md").path,
+                         folder.appendingPathComponent("\(stamp) Weekly (2).md").path])
+        let u1 = TranscriptStore.url(for: "Weekly", startedAt: t0, in: folder, exists: { taken.contains($0.path) })
+        expect(u1.lastPathComponent, "\(stamp) Weekly (3).md", "a taken name steps to the next free suffix")
+        let own = folder.appendingPathComponent("\(stamp) Weekly.md")
+        let u2 = TranscriptStore.url(for: "Weekly", startedAt: t0, in: folder, current: own, exists: { taken.contains($0.path) })
+        expect(u2.lastPathComponent, "\(stamp) Weekly.md", "this session's OWN file keeps its name on autosave (no suffix creep)")
+
+        // Real writes in a scratch folder: atomic replace, 0600, no temp left behind,
+        // and a title change moves the file.
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-selftest-\(ProcessInfo.processInfo.processIdentifier)")
+        try? FileManager.default.removeItem(at: scratch)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let a = scratch.appendingPathComponent("a.md")
+        do {
+            try TranscriptStore.save("one", to: a)
+            expect((try? String(contentsOf: a, encoding: .utf8)) ?? "nil", "one", "save writes the text (creating the folder)")
+            let perms = (try? FileManager.default.attributesOfItem(atPath: a.path)[.posixPermissions] as? Int) ?? -1
+            expect(String(perms, radix: 8), "600", "transcript file is mode 0600")
+            try TranscriptStore.save("two", to: a)
+            expect((try? String(contentsOf: a, encoding: .utf8)) ?? "nil", "two", "a second save replaces the content")
+            let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: scratch.path))?.filter { $0.hasSuffix(".tmp") } ?? []
+            expectInt(leftovers.count, 0, "no temp file is left behind after a save")
+            let b = scratch.appendingPathComponent("b.md")
+            try TranscriptStore.save("three", to: b, replacing: a)
+            expect(FileManager.default.fileExists(atPath: a.path) ? "still there" : "gone", "gone", "a title change removes the old file after the new one is in place")
+            expect((try? String(contentsOf: b, encoding: .utf8)) ?? "nil", "three", "…and the new file holds the text")
+            try TranscriptStore.save("four", to: b, replacing: b)
+            expect(FileManager.default.fileExists(atPath: b.path) ? "there" : "gone", "there", "replacing a file with itself does not delete it")
+        } catch {
+            expect("\(error)", "", "store writes succeed")
+        }
+        // A folder that cannot be created is a thrown error, not a silent no-op.
+        let bad = URL(fileURLWithPath: "/dev/null/nope/x.md")
+        do { try TranscriptStore.save("x", to: bad); expect("saved", "threw", "an unwritable folder throws") }
+        catch { expect("threw", "threw", "an unwritable folder throws") }
+    }
+
     static func pipelineTests() async {
         print("\nDictation pipeline — sink → VAD → segment → engine → report (no model, no mic)")
 
@@ -698,6 +836,8 @@ enum SelfTest {
 
         await pipelineTests()
         await listenTimingTests()
+        transcriptDocumentTests()
+        transcriptStoreTests()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
