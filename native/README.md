@@ -19,6 +19,37 @@ Everything in that panel ran on the laptop — Parakeet on the Neural Engine, no
 network, no API key. (Yes, it heard "Claude Code" as "clawed code". Local models
 have opinions.)
 
+## Listen — whole-meeting transcription (2.1.0)
+
+Press **⌘⇧L** (or menu → Start Listening). A tall panel appears at the right edge of
+the screen with an editable title (pre-filled from the frontmost window — Teams puts
+the meeting name there), a level meter, a running counter (`Listening · 47:12 ·
+6,200 words`) and the transcript growing paragraph by paragraph, newest at the bottom.
+It keeps going until you press ⌘⇧L again or click Stop. Pause is a button.
+
+- The transcript is written to `~/Documents/Spiel/Transcripts/<date> <time> <title>.md`
+  every 30 s and on every paragraph break (atomic temp-file + rename, mode 0600), so a
+  crash at minute 58 loses at most the paragraph in progress. YAML frontmatter
+  (`started`/`ended` ISO 8601 with offset, `words`, `input_device`, `engine`), then
+  `[MM:SS]` paragraphs. Editing the title renames the file.
+- Paragraphs split on a pause of 2 s or more (and every 90 s in a monologue). A pause
+  that long also drops the engine's carried decoder context, so a sentence after a long
+  silence does not inherit the previous one's state.
+- Markers are their own lines: `[paused 4 min]`, `[input changed to AirPods at 31:07]`,
+  `[missed ~8 s at 31:07]` (a segment the engine failed on — a gap, not a stop).
+- Offsets come from the audio sample counter, never the wall clock, with pauses added
+  back so `[31:07]` means 31 minutes into the meeting.
+- Mic-only. The Yeti hears both sides of a call played through speakers; there is no
+  system-audio tap and no speaker separation.
+- ⌘⇧D during Listen is refused with a reason (one microphone, one session). Listen never
+  pastes, never touches Secure Input, and never writes audio to disk — text only.
+- When you stop, the panel shows the summary and Copy (plain text) / Open (the file) /
+  Done. Nothing else happens with the file; it is yours.
+
+**Also changed for dictation:** capture now restarts itself when the audio route changes
+mid-run (AirPods connect, a USB mic unplugs, the default input is switched), instead of
+going quiet.
+
 ## Why a rewrite rather than an engine swap
 
 The three long-standing complaints about v1 are all **architecture**, not model
@@ -56,8 +87,12 @@ native/
 │   │   ├── AudioCapture.swift         # AVAudioEngine → 16 kHz mono float
 │   │   ├── AudioSink.swift            # order-preserving, re-armable audio handoff
 │   │   ├── VoiceActivityDetector.swift # energy-based speech gate
-│   │   ├── DictationSession.swift     # VAD → segment → transcribe → assemble
+│   │   ├── DictationSession.swift     # VAD → segment → transcribe → assemble (+ timing on events)
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
+│   │   ├── TranscriptDocument.swift   # Listen transcript: paragraphs, markers, frontmatter (pure)
+│   │   ├── TranscriptStore.swift      # ~/Documents/Spiel/Transcripts, atomic saves
+│   │   ├── HotkeyManager.swift        # Carbon global hotkeys (⌘⇧D dictation, ⌘⇧L listen), failure surfaced
+│   │   ├── WindowTitle.swift          # frontmost window title via AX (default Listen title)
 │   │   ├── Glossary.swift             # custom-vocabulary post-pass
 │   │   ├── TextInserter.swift         # AX + CGEvent insertion
 │   │   └── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log (off by default; menu → Diagnostic Logging)
@@ -65,9 +100,9 @@ native/
 │   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live
 │   │   └── SelfTest.swift             # the only test harness (no XCTest here)
 │   └── SpielApp/           # menu-bar app
-│       ├── main.swift                 # AppDelegate, menu, dictation lifecycle
-│       ├── HotkeyManager.swift        # Carbon global hotkey, failure surfaced
-│       ├── RecordingPanel.swift       # floating level-meter panel
+│       ├── main.swift                 # AppDelegate, menu, dictation + Listen lifecycle
+│       ├── RecordingPanel.swift       # floating level-meter panel (dictation)
+│       ├── ListenPanel.swift          # the Listen sidebar
 │       └── Notifier.swift             # user-facing notifications
 └── scripts/bundle.sh       # → build/Spiel.app
 ```
@@ -139,7 +174,7 @@ spiel-cli doctor                        # environment + permission report
 spiel-cli transcribe file.wav           # file → text, with timing
 spiel-cli transcribe file.wav --engine apple
 spiel-cli glossary "publish the arc gis layer as geo json"
-spiel-cli live --seconds 8              # mic → text (needs mic permission)
+spiel-cli live --seconds 8              # mic → text (needs mic permission); prints [route change → device]
 ```
 
 The CLI exists so transcription can be proven without a GUI, without the microphone,
