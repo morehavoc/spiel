@@ -303,6 +303,11 @@ public actor DictationSession {
     /// The app pauses by stopping capture; the session only sees a gap. Recording
     /// the span here keeps it on the report beside everything else about the run.
     public func notePause(seconds: Double) { pausedSeconds += max(0, seconds) }
+
+    /// Audio received since `reset()`, in seconds — the same counter every
+    /// `startOffset` is measured on, so a marker the app inserts "now" lands on the
+    /// same timeline as the speech around it.
+    public var audioSeconds: Double { Double(receivedSamples) / AudioCapture.sampleRate }
     public func noteCaptureRestart() { captureRestarts += 1 }
 
     private func processFrame(_ frame: [Float]) async {
