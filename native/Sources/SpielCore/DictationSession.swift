@@ -54,14 +54,31 @@ public actor DictationSession {
         /// manages its own decoder state — slower, and it discards the carried
         /// context this session maintains. 14 s + the 0.3 s pre-roll stays under it.
         public var maxSegmentDuration: TimeInterval = 14.0
+        /// A pause at least this long between two segments means the engine's
+        /// carried decoder context is dropped before the next one (`resetContext`),
+        /// and is what `TranscriptDocument` splits paragraphs on. Measured as real
+        /// silence — last speech frame to next speech onset, not close-to-open —
+        /// so a 2 s pause reads as 2 s rather than 2 s minus the 0.7 s trailing
+        /// silence and 0.3 s pre-roll the segment boundaries absorb. A 10-second
+        /// dictation never has a 2 s gap, so dictation is unaffected.
+        public var paragraphGap: TimeInterval = 2.0
         public init() {}
     }
 
     public enum Event: Sendable {
         case speechStarted
         case segmentCaptured(index: Int, seconds: Double)
-        case textReleased(String)
-        case error(String)
+        /// `startOffset` is where this segment's speech began, in seconds of audio
+        /// received since `reset()` (sample counter, not wall clock — a stalled
+        /// engine cannot shift it). `gapBefore` is the silence between the previous
+        /// segment's last speech and this one's onset; for the first segment it is
+        /// the idle time since `reset()`. Both are captured at segment OPEN and
+        /// carried through the transcribe task, because this event fires after
+        /// transcription, possibly seconds later.
+        case textReleased(String, startOffset: TimeInterval, gapBefore: TimeInterval)
+        /// A segment the engine failed on. Carries where it was and how long, so a
+        /// long-running consumer can mark the hole (`[missed ~8 s at 31:07]`).
+        case error(String, startOffset: TimeInterval, seconds: Double)
     }
 
     /// What one dictation actually did — so an empty transcript can be told apart
@@ -80,6 +97,15 @@ public actor DictationSession {
         /// Buffers the audio thread submitted while no stream was armed. Must be 0.
         public var droppedBuffers: Int = 0
         public var errors: [String] = []
+        /// Wall clock, for the transcript's frontmatter. Offsets inside the
+        /// transcript are sample-counted; these two are the only wall-clock fields.
+        public var startedAt: Date = Date()
+        public var endedAt: Date = Date()
+        /// Time capture was paused by the app (`notePause`). The session itself
+        /// has no pause — it just sees a gap.
+        public var pausedSeconds: Double = 0
+        /// Times the app restarted capture after an audio route change.
+        public var captureRestarts: Int = 0
 
         public init() {}
 
@@ -138,9 +164,22 @@ public actor DictationSession {
     private var finishInFlight: Task<Report, Never>?
 
     private var receivedSamples = 0
+    /// Samples that have been through `processFrame` — always a whole number of
+    /// VAD frames, and the basis of every offset the session reports.
+    private var processedSamples = 0
+    /// Sample position of the open segment's speech onset (pre-roll excluded), and
+    /// the silence that preceded it — both fixed at onset, read at close.
+    private var segmentStartSample = 0
+    private var segmentGapSamples = 0
+    /// Sample position where speech last ended (first silent frame after speech).
+    /// -1 until any speech has been heard.
+    private var lastSpeechEndSample = -1
     private var peak: Float = 0
     private var segmentsClosed = 0
     private var errors: [String] = []
+    private var startedAt = Date()
+    private var pausedSeconds: Double = 0
+    private var captureRestarts = 0
 
     /// Samples received but not yet forming a whole VAD frame.
     private var pending: [Float] = []
@@ -233,11 +272,18 @@ public actor DictationSession {
         speechRun = 0
         nextIndex = 0
         receivedSamples = 0
+        processedSamples = 0
+        segmentStartSample = 0
+        segmentGapSamples = 0
+        lastSpeechEndSample = -1
         peak = 0
         segmentsClosed = 0
         errors.removeAll()
+        startedAt = Date()
+        pausedSeconds = 0
+        captureRestarts = 0
         await vad?.reset()
-        if let p = transcriber as? ParakeetTranscriber { await p.resetContext() }
+        await transcriber.resetContext()
         // 3. Only now arm a fresh stream.
         armForDictation()
     }
@@ -254,8 +300,16 @@ public actor DictationSession {
         }
     }
 
+    /// The app pauses by stopping capture; the session only sees a gap. Recording
+    /// the span here keeps it on the report beside everything else about the run.
+    public func notePause(seconds: Double) { pausedSeconds += max(0, seconds) }
+    public func noteCaptureRestart() { captureRestarts += 1 }
+
     private func processFrame(_ frame: [Float]) async {
         guard let vad else { return }
+        // Position of the first sample of THIS frame, before it is counted.
+        let frameStart = processedSamples
+        processedSamples += frame.count
 
         var probability: Float = 0
         do {
@@ -273,6 +327,14 @@ public actor DictationSession {
             if !speaking {
                 speaking = true
                 speechRun = 0
+                // Offset is the onset of speech, not the pre-roll: the pre-roll is
+                // silence we keep so the first consonant survives, and a reader's
+                // "[MM:SS]" should point at the word.
+                segmentStartSample = frameStart
+                // Gap = onset minus the end of the speech before it. Before any
+                // speech has been heard the "previous speech" is the reset itself,
+                // so the first segment's gap is the idle lead-in.
+                segmentGapSamples = lastSpeechEndSample < 0 ? frameStart : frameStart - lastSpeechEndSample
                 // Start the segment with the pre-roll so the word's onset survives.
                 current = preRollBuffer
                 preRollBuffer.removeAll()
@@ -285,6 +347,7 @@ public actor DictationSession {
                 await closeSegment()
             }
         } else if speaking {
+            if silenceRun == 0 { lastSpeechEndSample = frameStart }  // speech just ended
             current.append(contentsOf: frame)  // keep trailing silence for context
             silenceRun += seconds
             if silenceRun >= config.silenceDuration {
@@ -307,16 +370,26 @@ public actor DictationSession {
         speaking = false
         let spoke = speechRun
         speechRun = 0
+        // A segment closed by the length cap (or by finish) is still speaking, so
+        // speech "ends" at the close and the next segment's gap reads ~0.
+        if silenceRun == 0 { lastSpeechEndSample = processedSamples }
         silenceRun = 0
+
+        let sr = AudioCapture.sampleRate
+        let startOffset = Double(segmentStartSample) / sr
+        let gapBefore = max(0, Double(segmentGapSamples) / sr)
 
         guard spoke >= config.minSpeechDuration, !audio.isEmpty else { return }
 
         let index = nextIndex
         nextIndex += 1
         segmentsClosed += 1
-        eventHandler?(.segmentCaptured(
-            index: index, seconds: Double(audio.count) / AudioCapture.sampleRate
-        ))
+        let seconds = Double(audio.count) / sr
+        eventHandler?(.segmentCaptured(index: index, seconds: seconds))
+        // Context carried across a long pause is noise, and across an hour it is
+        // untested. Decide it here, at close, from the sample counter; the segment
+        // task applies it in order, right before the engine call.
+        let dropContext = index > 0 && gapBefore >= config.paragraphGap
 
         // Segments are transcribed ONE AT A TIME, in capture order — each task waits
         // for the previous segment's task before it calls the engine. Two reasons,
@@ -337,6 +410,7 @@ public actor DictationSession {
         let task = Task { [weak self, transcriber, assembler, glossary, eventHandler] in
             if let previous { _ = await previous.value }
             if Task.isCancelled { return }
+            if dropContext { await transcriber.resetContext() }
             do {
                 let raw = try await transcriber.transcribe(samples: audio)
                 if Task.isCancelled { return }
@@ -344,7 +418,11 @@ public actor DictationSession {
                     TranscriptSegment(index: index, text: raw)
                 )
                 if !released.isEmpty {
-                    eventHandler?(.textReleased(glossary.apply(to: released)))
+                    // Segments are serialised, so what the assembler releases here is
+                    // this segment's own text and the offsets captured at its open
+                    // describe it.
+                    eventHandler?(.textReleased(glossary.apply(to: released),
+                                                startOffset: startOffset, gapBefore: gapBefore))
                 }
             } catch {
                 if Task.isCancelled { return }
@@ -354,7 +432,7 @@ public actor DictationSession {
                     TranscriptSegment(index: index, text: "")
                 )
                 await self?.recordError("segment \(index): \(error)")
-                eventHandler?(.error("segment \(index): \(error)"))
+                eventHandler?(.error("segment \(index): \(error)", startOffset: startOffset, seconds: seconds))
             }
         }
         inFlight.append(task)
@@ -406,6 +484,10 @@ public actor DictationSession {
         report.segments = segmentsClosed
         report.droppedBuffers = sink.droppedBuffers
         report.errors = errors
+        report.startedAt = startedAt
+        report.endedAt = Date()
+        report.pausedSeconds = pausedSeconds
+        report.captureRestarts = captureRestarts
         return report
     }
 

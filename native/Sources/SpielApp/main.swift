@@ -185,11 +185,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setStatus("Listening…")
         case .segmentCaptured:
             panel.setStatus("Transcribing…")
-        case .textReleased(let t):
+        case .textReleased(let t, _, _):
             previewText = previewText.isEmpty ? t : previewText + " " + t
             panel.setTranscript(TranscriptAssembler.tidy(previewText))
             panel.setStatus("Listening…")
-        case .error(let e):
+        case .error(let e, _, _):
             lastError = e
             DiagnosticLog.write("segment error: \(e)")
         }

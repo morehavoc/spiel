@@ -42,6 +42,11 @@ actor CountingTranscriber: Transcriber {
     private(set) var maxConcurrent = 0
     private var active = 0
     func resetConcurrency() { maxConcurrent = 0; active = 0 }
+    /// `resetContext` calls, so the paragraph-gap rule can be counted rather than
+    /// assumed. `reset()` also calls it once per dictation; tests zero this after.
+    private(set) var contextResets = 0
+    func resetContext() { contextResets += 1 }
+    func zeroContextResets() { contextResets = 0 }
     func prepare() async throws {}
     func transcribe(samples: [Float]) async throws -> String {
         calls += 1
@@ -92,6 +97,10 @@ enum SelfTest {
         return silence + tone + silence
     }
 
+    static func silence(_ seconds: Double) -> [Float] {
+        [Float](repeating: 0, count: Int(seconds * AudioCapture.sampleRate))
+    }
+
     /// Feed like the microphone does: ~341-sample tap buffers, synchronously.
     static func feedLikeMic(_ session: DictationSession, _ samples: [Float]) {
         var i = 0
@@ -99,6 +108,132 @@ enum SelfTest {
             let end = min(i + 341, samples.count)
             session.sink.submit(Array(samples[i..<end]))
             i = end
+        }
+    }
+
+    /// Listen — timing on events. Offsets come from the sample counter and are fixed
+    /// at segment open, so a slow engine cannot move them; a pause longer than
+    /// `paragraphGap` drops the engine's carried context exactly once.
+    static func listenTimingTests() async {
+        print("\nListen timing — offsets from the sample counter, context reset on long gaps")
+
+        struct Rel: Sendable { var text: String; var at: Double; var gap: Double }
+        final class Box: @unchecked Sendable { var rel: [Rel] = []; var errs: [(Double, Double)] = []; let lock = NSLock() }
+
+        func run(_ audio: [Float], slow: Int = 0, config: DictationSession.Config = .init())
+            async -> (rel: [Rel], errs: [(Double, Double)], resets: Int, report: DictationSession.Report) {
+            let transcriber = CountingTranscriber()
+            let session = DictationSession(transcriber: transcriber, config: config, vad: EnergyVAD())
+            try? await session.prepare()
+            let box = Box()
+            await session.setEventHandler { ev in
+                box.lock.lock(); defer { box.lock.unlock() }
+                switch ev {
+                case .textReleased(let t, let at, let gap): box.rel.append(Rel(text: t, at: at, gap: gap))
+                case .error(_, let at, let secs): box.errs.append((at, secs))
+                default: break
+                }
+            }
+            await session.reset()
+            await transcriber.zeroContextResets()
+            await transcriber.setSlowNext(slow)
+            feedLikeMic(session, audio)
+            let report = await session.finishWithReport()
+            return (box.rel, box.errs, await transcriber.contextResets, report)
+        }
+
+        // Two bursts with 5 s of real silence between them. The frame grid is
+        // 0.256 s, so every offset is expected to within one frame of the timeline.
+        let frame = DictationSession.vadFrameSeconds
+        func near(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= frame + 0.001 }
+        let twoBursts = burst(speech: 1.0) + silence(3.0) + burst(speech: 1.0)  // tone at 1–2 s and 7–8 s
+        let a = await run(twoBursts)
+        expectInt(a.rel.count, 2, "two segments released with timing")
+        if a.rel.count == 2 {
+            expect(near(a.rel[0].at, 1.0) ? "ok" : "\(a.rel[0].at)", "ok", "segment 1 startOffset ≈ 1.0 s (speech onset, not pre-roll)")
+            expect(near(a.rel[0].gap, 1.0) ? "ok" : "\(a.rel[0].gap)", "ok", "segment 1 gapBefore ≈ the 1 s idle lead-in")
+            expect(near(a.rel[1].at, 7.0) ? "ok" : "\(a.rel[1].at)", "ok", "segment 2 startOffset ≈ 7.0 s")
+            expect(near(a.rel[1].gap, 5.0) ? "ok" : "\(a.rel[1].gap)", "ok", "segment 2 gapBefore ≈ the 5 s of real silence (speech end → onset, not close → open)")
+        }
+        expectInt(a.resets, 1, "resetContext called exactly once — for the segment after the ≥ paragraphGap pause")
+        expect(a.report.endedAt >= a.report.startedAt ? "ok" : "backwards", "ok", "report carries startedAt ≤ endedAt")
+        expect(a.report.startedAt.timeIntervalSinceNow > -60 ? "ok" : "stale", "ok", "startedAt is set at reset(), not at init")
+
+        // Same audio, slow engine: offsets are captured at segment OPEN and must not
+        // drift by the engine's latency.
+        let b = await run(twoBursts, slow: 2)
+        expectInt(b.rel.count, 2, "slow engine: both segments still released")
+        if a.rel.count == 2 && b.rel.count == 2 {
+            expect(b.rel.map { String(format: "%.3f/%.3f", $0.at, $0.gap) }.joined(separator: " "),
+                   a.rel.map { String(format: "%.3f/%.3f", $0.at, $0.gap) }.joined(separator: " "),
+                   "offsets and gaps are identical with a slow engine (sample counter, not wall clock)")
+        }
+
+        // Short gap: two bursts 0.4 s apart. No context reset, gap reads short.
+        let close = burst(speech: 0.8, pad: 0.2) + burst(speech: 0.8, pad: 0.2)  // 0.4 s between tones
+        var cfg = DictationSession.Config()
+        cfg.silenceDuration = 0.25  // one frame, so the 0.4 s pause closes the segment
+        let c = await run(close, config: cfg)
+        expectInt(c.rel.count, 2, "short gap: two segments")
+        if c.rel.count == 2 {
+            expect(c.rel[1].gap < 2.0 ? "ok" : "\(c.rel[1].gap)", "ok", "short gap reads under paragraphGap")
+        }
+        expectInt(c.resets, 0, "no context reset when every gap is under paragraphGap")
+
+        // A failed segment reports where it was and how long, so Listen can mark
+        // the hole instead of silently closing it.
+        do {
+            let transcriber = CountingTranscriber()
+            let session = DictationSession(transcriber: transcriber, vad: EnergyVAD())
+            try? await session.prepare()
+            let box = Box()
+            await session.setEventHandler { ev in
+                box.lock.lock(); defer { box.lock.unlock() }
+                if case .error(_, let at, let secs) = ev { box.errs.append((at, secs)) }
+            }
+            await session.reset()
+            await transcriber.setFailNext(1)
+            feedLikeMic(session, burst(speech: 1.0))
+            _ = await session.finishWithReport()
+            expectInt(box.errs.count, 1, "engine failure emits one .error with position")
+            if let e = box.errs.first {
+                expect(near(e.0, 1.0) ? "ok" : "\(e.0)", "ok", ".error startOffset is the failed segment's onset")
+                expect(e.1 >= 1.0 && e.1 <= 2.5 ? "ok" : "\(e.1)", "ok", ".error seconds is the failed segment's audio length (speech + pre-roll + trailing silence)")
+            }
+        }
+
+        // Pause and capture-restart counters ride on the report.
+        do {
+            let session = DictationSession(transcriber: CountingTranscriber(), vad: EnergyVAD())
+            try? await session.prepare()
+            await session.reset()
+            await session.notePause(seconds: 12.5)
+            await session.notePause(seconds: -3)  // a negative span is a bug upstream; never subtract
+            await session.noteCaptureRestart()
+            let r = await session.finishWithReport()
+            expect(String(format: "%.1f", r.pausedSeconds), "12.5", "notePause accumulates onto the report and ignores a negative span")
+            expectInt(r.captureRestarts, 1, "noteCaptureRestart counts onto the report")
+            await session.reset()
+            let r2 = await session.finishWithReport()
+            expect(String(format: "%.1f", r2.pausedSeconds), "0.0", "reset() clears pausedSeconds")
+            expectInt(r2.captureRestarts, 0, "reset() clears captureRestarts")
+        }
+
+        // The "audio is dropped" claim, asserted: 40 segments through a session
+        // that is never reset, text in capture order, and the audio buffers empty
+        // between segments. Memory for an hour is bounded by text, not audio.
+        do {
+            var many: [Float] = []
+            for _ in 0..<40 { many += burst(speech: 0.6, pad: 0.5) }
+            let d = await run(many)
+            expectInt(d.rel.count, 40, "40 segments on one never-reset session all release")
+            expect(d.rel.map(\.text).joined(separator: " "), (1...40).map { "word\($0)" }.joined(separator: " "),
+                   "40 segments release in capture order")
+            expect(d.rel.map(\.at) == d.rel.map(\.at).sorted() ? "ok" : "unsorted", "ok",
+                   "startOffsets are monotonic across 40 segments")
+            expect(String(Int(d.report.audioSeconds.rounded())), "64", "40 × 1.6 s of audio all reached the session")
+            expect(d.report.text.split(separator: " ").count == 40 ? "ok" : "\(d.report.text.split(separator: " ").count)", "ok",
+                   "final report text holds all 40 words")
         }
     }
 
@@ -562,6 +697,7 @@ enum SelfTest {
         }
 
         await pipelineTests()
+        await listenTimingTests()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

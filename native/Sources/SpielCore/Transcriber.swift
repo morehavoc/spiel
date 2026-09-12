@@ -33,6 +33,15 @@ public protocol Transcriber: Sendable {
     func prepare() async throws
     /// `samples` are 16 kHz mono, normalized -1...1.
     func transcribe(samples: [Float]) async throws -> String
+    /// Drop any linguistic context carried between calls. Engines without carried
+    /// state (Apple's) get the no-op default; `DictationSession` calls this at every
+    /// `reset()` and again before any segment that follows a long pause, because
+    /// context carried across a 90-second silence is noise.
+    func resetContext() async
+}
+
+public extension Transcriber {
+    func resetContext() async {}
 }
 
 public enum TranscriberError: Error, CustomStringConvertible {
