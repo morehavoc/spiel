@@ -151,13 +151,18 @@ case "live":
                 print("\nround \(round)/\(rounds): listening for \(Int(seconds))s — speak now")
                 // Synchronous, ordered handoff — NOT `Task { await feed(...) }`, whose
                 // execution order is not guaranteed and would shuffle mic buffers.
-                try capture.start { samples in
+                try capture.start(handler: { samples in
                     session.sink.submit(samples)
-                }
+                }, onRouteChange: { device in
+                    // Printed so the route-change restart can be verified by hand:
+                    // switch the default input mid-run and watch for this line.
+                    print("  [route change → \(device)]")
+                })
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                let restarts = capture.restarts
                 capture.stop()
                 let report = await session.finishWithReport()
-                print("  audio \(String(format: "%.2f", report.audioSeconds))s, peak \(String(format: "%.3f", report.peak)), segments \(report.segments), dropped buffers \(report.droppedBuffers)")
+                print("  audio \(String(format: "%.2f", report.audioSeconds))s, peak \(String(format: "%.3f", report.peak)), segments \(report.segments), dropped buffers \(report.droppedBuffers), capture restarts \(restarts)")
                 print("  diagnosis: \(report.diagnosis)")
                 print("  TRANSCRIPT: \(report.text.isEmpty ? "(nothing captured)" : report.text)")
                 if report.droppedBuffers > 0 { exitCode = 3 }

@@ -68,10 +68,76 @@ public final class AudioCapture: @unchecked Sendable {
 
     /// Starts the mic. `handler` is called on the audio thread with 16 kHz mono
     /// samples -- keep it cheap and non-blocking.
-    public func start(handler: @escaping ([Float]) -> Void) throws {
+    ///
+    /// `onRouteChange` fires on a private serial queue (NOT the main thread — hop
+    /// if you touch UI) after the audio route changed mid-capture and capture was
+    /// restarted on the new default input — with the device name on success, or the
+    /// error text if the restart failed (capture is then stopped). Nil keeps the old
+    /// behaviour of merely logging it.
+    public func start(handler: @escaping ([Float]) -> Void,
+                      onRouteChange: ((String) -> Void)? = nil) throws {
+        try control.sync { try startLocked(handler: handler, onRouteChange: onRouteChange) }
+    }
+
+    /// Every start/stop/restart runs here, serially. The route-change notification
+    /// arrives on an arbitrary thread, and a restart racing a `stop()` from the app
+    /// would re-arm a capture the user just ended. Not the main queue: `spiel-cli`
+    /// blocks its main thread on a semaphore, so a main-queue hop there never runs
+    /// — which is exactly how the first version of this restart was found dead in a
+    /// live test (capture stopped at the switch, 0 restarts).
+    private let control = DispatchQueue(label: "com.morehavoc.spiel.audio-capture")
+
+    private func startLocked(handler: @escaping ([Float]) -> Void,
+                             onRouteChange: ((String) -> Void)?) throws {
         guard !isRunning else { return }
         onSamples = handler
+        self.onRouteChange = onRouteChange
+        try arm()
 
+        // The engine STOPS ITSELF when the audio route changes mid-capture (AirPods
+        // connect, a USB mic unplugs, the default input is switched, the Mac wakes
+        // from sleep). Nothing else tells us: the tap simply stops firing and the
+        // meter freezes. For a 14 s dictation that is a diagnosis; for an hour-long
+        // Listen it is a silent death at the moment he puts AirPods in — so capture
+        // is re-armed on the new input, and the caller is told which device it is.
+        configObserver.map { NotificationCenter.default.removeObserver($0) }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.control.async { self.restartAfterRouteChange() }
+        }
+        isRunning = true
+    }
+
+    private var onRouteChange: ((String) -> Void)?
+    /// Restarts performed after a route change since `start()`.
+    private(set) public var restarts = 0
+
+    /// Tear down the tap and converter, re-read the input format (a USB mic at
+    /// 48 kHz to a built-in at 44.1 kHz changes it), re-install and restart.
+    private func restartAfterRouteChange() {
+        guard isRunning else { return }
+        let device = Self.defaultInputDeviceName()
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engine.reset()
+        do {
+            try arm()
+            restarts += 1
+            DiagnosticLog.write("audio engine configuration changed mid-capture — restarted capture on \(device)")
+            onRouteChange?(device)
+        } catch {
+            isRunning = false
+            converterLock.lock(); converter = nil; converterLock.unlock()
+            DiagnosticLog.write("audio engine configuration changed mid-capture — restart FAILED: \(error); default input is now \(device)")
+            onRouteChange?("could not restart capture on \(device): \(error)")
+        }
+    }
+
+    /// The engine set-up shared by `start` and the route-change restart: read the
+    /// input format, build the converter, install the tap, start the engine.
+    private func arm() throws {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         // With NO input device (headless Mac, or every input disconnected) the node
@@ -89,30 +155,20 @@ public final class AudioCapture: @unchecked Sendable {
             channels: 1,
             interleaved: false
         ) else { throw CaptureError.formatUnavailable }
-        targetFormat = target
 
         // The mic's native rate is typically 44.1/48 kHz; convert rather than asking
-        // the hardware for 16 kHz, which many devices silently refuse.
+        // the hardware for 16 kHz, which many devices silently refuse. Rebuilt under
+        // the lock on every arm because the audio thread may be inside `convert`.
+        converterLock.lock()
+        targetFormat = target
         converter = AVAudioConverter(from: inputFormat, to: target)
+        converterLock.unlock()
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             if let out = self.convert(buffer) {
                 self.onSamples?(out)
             }
-        }
-
-        // The engine STOPS ITSELF when the audio route changes mid-capture (AirPods
-        // connect, a USB mic unplugs, the default input is switched). Nothing else
-        // tells us: the tap simply stops firing, the meter freezes, and the report
-        // would read "N s of audio" with no explanation. Log it so the dictation's
-        // silence is attributable.
-        configObserver.map { NotificationCenter.default.removeObserver($0) }
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-        ) { [weak self] _ in
-            guard let self, self.isRunning else { return }
-            DiagnosticLog.write("audio engine configuration changed mid-capture (input device switched or removed?) — capture stopped; default input is now \(Self.defaultInputDeviceName())")
         }
 
         engine.prepare()
@@ -122,15 +178,19 @@ public final class AudioCapture: @unchecked Sendable {
             input.removeTap(onBus: 0)
             throw CaptureError.engineFailed(error.localizedDescription)
         }
-        isRunning = true
     }
 
     public func stop() {
+        control.sync { stopLocked() }
+    }
+
+    private func stopLocked() {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
         onSamples = nil
+        onRouteChange = nil
         configObserver.map { NotificationCenter.default.removeObserver($0) }
         configObserver = nil
     }
