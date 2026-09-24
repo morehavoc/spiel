@@ -10,14 +10,14 @@ func usage() -> Never {
     FileHandle.standardError.write("""
     spiel-cli — headless harness for SpielCore
 
-      spiel-cli transcribe <audiofile> [--engine parakeet|apple] [--no-glossary]
+      spiel-cli transcribe <audiofile> [--engine unified|v3|v2|apple] [--no-glossary]
       spiel-cli glossary "<text>"
       spiel-cli doctor
       spiel-cli selftest
-      spiel-cli live [--seconds N] [--rounds N] [--engine parakeet|apple]
+      spiel-cli live [--seconds N] [--rounds N] [--engine unified|v3|v2|apple]
           --rounds runs N consecutive dictations on ONE session, which is what the
           app does across hotkey presses. Round 2 is the one that used to go deaf.
-      spiel-cli replay <audiofile> [--engine parakeet|apple] [--paragraph-gap N]
+      spiel-cli replay <audiofile> [--engine unified|v3|v2|apple] [--paragraph-gap N]
           feed a file through the real VAD + segmenter + engine in mic-sized buffers
           and print it beside a one-shot transcription of the same file — words the
           one-shot has and the replay lacks were lost by segmentation.
@@ -35,7 +35,9 @@ func makeTranscriber(_ args: [String]) -> any Transcriber {
     let name = arg("--engine", in: args) ?? "parakeet"
     switch name {
     case "apple": return AppleSpeechTranscriber()
-    default: return ParakeetTranscriber()
+    case "v2": return ParakeetTranscriber(version: .v2)
+    case "v3": return ParakeetTranscriber()
+    default: return ParakeetUnifiedTranscriber()
     }
 }
 

@@ -205,12 +205,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func warmUp() async {
         let t0 = Date()
+        // Parakeet Unified EN first (fewest errors on his own voice, 2026-09-23), then
+        // TDT v3 (the previous default, already on disk for existing installs), then
+        // Apple. A failed download on first run degrades the engine, never the app.
+        do {
+            self.session = try await makeSession(ParakeetUnifiedTranscriber())
+            self.engineName = "parakeet-unified-en-0.6b"
+            self.engineReady = true
+            self.lastError = nil
+            DiagnosticLog.write("engine ready: parakeet unified (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
+            updateStatusItem()
+            return
+        } catch {
+            DiagnosticLog.write("parakeet unified failed to load: \(error) — trying parakeet v3")
+        }
         do {
             self.session = try await makeSession(ParakeetTranscriber())
             self.engineName = "parakeet-tdt-0.6b-v3"
             self.engineReady = true
-            self.lastError = nil
-            DiagnosticLog.write("engine ready: parakeet (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
+            self.lastError = "Parakeet Unified unavailable, using Parakeet v3"
+            DiagnosticLog.write("engine ready: parakeet v3 (fallback, \(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
         } catch {
             DiagnosticLog.write("parakeet failed to load: \(error) — trying Apple SpeechAnalyzer")
             // Fall back to Apple's on-device engine rather than dying. Parakeet needs
