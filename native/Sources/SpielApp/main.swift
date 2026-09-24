@@ -214,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.engineReady = true
             self.lastError = nil
             DiagnosticLog.write("engine ready: parakeet unified (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
+            // Prime the vocabulary boost now (first launch downloads its ~98 MB CTC
+            // model) so the first dictation is boosted too; every dictation start
+            // re-hands the list, which only rebuilds when the file changed.
+            await self.session?.setGlossary(Glossary.load())
             updateStatusItem()
             return
         } catch {

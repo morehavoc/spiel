@@ -15,8 +15,13 @@ import Foundation
 public struct Glossary: Sendable {
     /// alias (lowercased, no punctuation) -> canonical spelling
     private var map: [String: String]
+    /// canonical spelling -> aliases, as loaded. The acoustic vocabulary boost
+    /// (ParakeetUnifiedTranscriber.setVocabulary) reads the same list, so one file
+    /// drives both the text replacement and the boost.
+    public let entries: [String: [String]]
 
     public init(entries: [String: [String]] = Glossary.defaultEntries) {
+        self.entries = entries
         var m: [String: String] = [:]
         for (canonical, aliases) in entries {
             m[Glossary.normalize(canonical)] = canonical

@@ -681,7 +681,31 @@ enum SelfTest {
     static func run() async -> Int32 {
         print("spiel selftest\n")
 
-        print("TranscriptAssembler — speech-order reassembly")
+        print("Vocabulary boost — which terms are safe to boost acoustically")
+        // Measured 2026-09-23: boosting near-English terms rewrote ordinary speech
+        // ("code" → "Codex", "things" → "Airthings", "to ArcGIS Online" lost "to").
+        expect(ParakeetUnifiedTranscriber.isBoostable("Codex") ? "boost" : "skip", "skip", "an English word (Codex) is not boosted")
+        expect(ParakeetUnifiedTranscriber.isBoostable("Airthings") ? "boost" : "skip", "skip", "a term that splits into English words (Airthings) is not boosted")
+        expect(ParakeetUnifiedTranscriber.isBoostable("ArcGIS Online") ? "boost" : "skip", "skip", "a multi-word term is not boosted")
+        expect(ParakeetUnifiedTranscriber.isBoostable("MoE") ? "boost" : "skip", "skip", "a term under 4 letters is not boosted")
+        expect(ParakeetUnifiedTranscriber.isBoostable("Deskbot") ? "boost" : "skip", "boost", "a non-word with no close dictionary neighbour (Deskbot) IS boosted")
+        expect(ParakeetUnifiedTranscriber.isBoostable("Newsologue") ? "boost" : "skip", "boost", "Newsologue IS boosted")
+        do {
+            actor VocabStub: Transcriber {
+                nonisolated let kind: TranscriberKind = .parakeet
+                var seen: [String: [String]]?
+                func prepare() async throws {}
+                func transcribe(samples: [Float]) async throws -> String { "" }
+                func setVocabulary(_ entries: [String: [String]]) async { seen = entries }
+            }
+            let stub = VocabStub()
+            let session = DictationSession(transcriber: stub, vad: EnergyVAD())
+            await session.setGlossary(Glossary(entries: ["Deskbot": ["desk bot"]]))
+            for _ in 0..<50 where await stub.seen == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+            expect(await stub.seen?["Deskbot"]?.first ?? "nil", "desk bot", "setGlossary hands the same list to the engine's boost")
+        }
+
+        print("\nTranscriptAssembler — speech-order reassembly")
 
         // The v1 bug: results were appended in COMPLETION order, so a slow first
         // segment and a fast second one swapped two sentences.

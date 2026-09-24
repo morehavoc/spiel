@@ -17,7 +17,7 @@ func usage() -> Never {
       spiel-cli live [--seconds N] [--rounds N] [--engine unified|v3|v2|apple]
           --rounds runs N consecutive dictations on ONE session, which is what the
           app does across hotkey presses. Round 2 is the one that used to go deaf.
-      spiel-cli replay <audiofile> [--engine unified|v3|v2|apple] [--paragraph-gap N]
+      spiel-cli replay <audiofile> [--engine unified|v3|v2|apple] [--no-boost] [--no-glossary] [--paragraph-gap N]
           feed a file through the real VAD + segmenter + engine in mic-sized buffers
           and print it beside a one-shot transcription of the same file — words the
           one-shot has and the replay lacks were lost by segmentation.
@@ -37,7 +37,7 @@ func makeTranscriber(_ args: [String]) -> any Transcriber {
     case "apple": return AppleSpeechTranscriber()
     case "v2": return ParakeetTranscriber(version: .v2)
     case "v3": return ParakeetTranscriber()
-    default: return ParakeetUnifiedTranscriber()
+    default: return ParakeetUnifiedTranscriber(boost: !args.contains("--no-boost"))
     }
 }
 
@@ -215,7 +215,17 @@ case "replay":
                 case .error(let e, _, _): print("  ! \(e)")
                 }
             }
+            // Same vocabulary the app loads (user file merged over built-ins), with or
+            // without the boost, so a boost comparison changes exactly one thing.
+            let g = args.contains("--no-glossary") ? Glossary(entries: [:]) : Glossary.load()
+            await session.setGlossary(g)
+            // Configure the boost synchronously here (the app does it off the critical
+            // path) so the replay measures a boosted run from sample 0.
+            if !args.contains("--no-boost") {
+                await (session.transcriberForTesting).setVocabulary(g.entries)
+            }
             await session.reset()
+            let feedStart = Date()
             var i = 0
             while i < samples.count {
                 let end = min(i + 341, samples.count)
@@ -223,6 +233,8 @@ case "replay":
                 i = end
             }
             let report = await session.finishWithReport()
+            let wall = Date().timeIntervalSince(feedStart)
+            print("pipeline wall: \(String(format: "%.2f", wall))s for \(report.segments) segments (\(String(format: "%.0f", wall / Double(max(report.segments, 1)) * 1000)) ms/segment)")
             let refWords = whole.split(separator: " ").count
             let gotWords = report.text.split(separator: " ").count
             print("diagnosis : \(report.diagnosis)")

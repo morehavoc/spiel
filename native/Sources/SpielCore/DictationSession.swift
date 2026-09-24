@@ -160,6 +160,8 @@ public actor DictationSession {
 
     private let config: Config
     private let transcriber: any Transcriber
+    /// For spiel-cli only: configure the engine directly before a replay.
+    public var transcriberForTesting: any Transcriber { transcriber }
     private var glossary: Glossary
     private let assembler = TranscriptAssembler()
 
@@ -252,7 +254,14 @@ public actor DictationSession {
     }
 
     /// Swap the vocabulary (re-read from the user file at each start).
-    public func setGlossary(_ g: Glossary) { glossary = g }
+    public func setGlossary(_ g: Glossary) {
+        glossary = g
+        // Hand the same list to the engine's acoustic boost WITHOUT awaiting it: a
+        // changed vocabulary costs a re-tokenise, and the caller starts the mic right
+        // after this — waiting here would clip the first words of the dictation.
+        let t = transcriber, e = g.entries
+        Task { await t.setVocabulary(e) }
+    }
 
     public func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         eventHandler = handler

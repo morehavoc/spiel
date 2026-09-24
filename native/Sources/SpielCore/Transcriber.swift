@@ -38,10 +38,15 @@ public protocol Transcriber: Sendable {
     /// `reset()` and again before any segment that follows a long pause, because
     /// context carried across a 90-second silence is noise.
     func resetContext() async
+    /// The user's vocabulary (canonical -> aliases), for engines that can bias
+    /// recognition toward it. Called at the start of every dictation; engines
+    /// without a boost get the no-op default.
+    func setVocabulary(_ entries: [String: [String]]) async
 }
 
 public extension Transcriber {
     func resetContext() async {}
+    func setVocabulary(_ entries: [String: [String]]) async {}
 }
 
 public enum TranscriberError: Error, CustomStringConvertible {
