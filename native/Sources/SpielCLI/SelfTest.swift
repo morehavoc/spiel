@@ -147,7 +147,9 @@ enum SelfTest {
         let frame = DictationSession.vadFrameSeconds
         func near(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= frame + 0.001 }
         let twoBursts = burst(speech: 1.0) + silence(3.0) + burst(speech: 1.0)  // tone at 1–2 s and 7–8 s
-        let a = await run(twoBursts)
+        var carry = DictationSession.Config()
+        carry.carryDecoderContext = true
+        let a = await run(twoBursts, config: carry)
         expectInt(a.rel.count, 2, "two segments released with timing")
         if a.rel.count == 2 {
             expect(near(a.rel[0].at, 1.0) ? "ok" : "\(a.rel[0].at)", "ok", "segment 1 startOffset ≈ 1.0 s (speech onset, not pre-roll)")
@@ -161,7 +163,7 @@ enum SelfTest {
 
         // Same audio, slow engine: offsets are captured at segment OPEN and must not
         // drift by the engine's latency.
-        let b = await run(twoBursts, slow: 2)
+        let b = await run(twoBursts, slow: 2, config: carry)
         expectInt(b.rel.count, 2, "slow engine: both segments still released")
         if a.rel.count == 2 && b.rel.count == 2 {
             expect(b.rel.map { String(format: "%.3f/%.3f", $0.at, $0.gap) }.joined(separator: " "),
@@ -172,6 +174,7 @@ enum SelfTest {
         // Short gap: two bursts 0.4 s apart. No context reset, gap reads short.
         let close = burst(speech: 0.8, pad: 0.2) + burst(speech: 0.8, pad: 0.2)  // 0.4 s between tones
         var cfg = DictationSession.Config()
+        cfg.carryDecoderContext = true
         cfg.silenceDuration = 0.25  // one frame, so the 0.4 s pause closes the segment
         let c = await run(close, config: cfg)
         expectInt(c.rel.count, 2, "short gap: two segments")
@@ -179,6 +182,29 @@ enum SelfTest {
             expect(c.rel[1].gap < 2.0 ? "ok" : "\(c.rel[1].gap)", "ok", "short gap reads under paragraphGap")
         }
         expectInt(c.resets, 0, "no context reset when every gap is under paragraphGap")
+
+        // Length-cap split lands in the quiet gap, not at the frame edge.
+        do {
+            let sr = AudioCapture.sampleRate
+            let loud = { (secs: Double) in (0..<Int(secs * sr)).map { i in Float(sin(Double(i) * 0.3)) * 0.5 } }
+            // 12 s of tone, a 150 ms gap, 2 s of tone: the gap is 2 s from the end.
+            let audio = loud(12.0) + [Float](repeating: 0, count: Int(0.15 * sr)) + loud(2.0)
+            let tail = DictationSession.quietestSplitTail(audio, searchSeconds: 4.0)
+            let tailSecs = Double(tail.count) / sr
+            expect(tailSecs > 2.0 && tailSecs < 2.15 ? "ok" : "\(tailSecs)", "ok", "cap split cuts inside the 150 ms gap (tail ≈ 2.0–2.15 s)")
+            expectInt(DictationSession.quietestSplitTail(loud(2.0), searchSeconds: 4.0).count, 0, "cap split: buffer shorter than the search window → no split (hard cut)")
+        }
+
+        // Default config: the carried decoder state lost words on real audio
+        // (2026-09-23), so every segment after the first starts from a fresh state,
+        // however short the gap.
+        var fresh = DictationSession.Config()
+        fresh.silenceDuration = 0.25
+        let d = await run(close, config: fresh)
+        expectInt(d.rel.count, 2, "default config, short gap: two segments")
+        expectInt(d.resets, 1, "default config resets context before EVERY segment after the first, even across a short gap")
+        let e = await run(twoBursts)
+        expectInt(e.resets, 1, "default config, long gap: one reset for two segments (not two — the gap rule does not double it)")
 
         // A failed segment reports where it was and how long, so Listen can mark
         // the hole instead of silently closing it.

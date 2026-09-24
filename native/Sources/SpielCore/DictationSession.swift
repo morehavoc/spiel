@@ -62,6 +62,19 @@ public actor DictationSession {
         /// silence and 0.3 s pre-roll the segment boundaries absorb. A 10-second
         /// dictation never has a 2 s gap, so dictation is unaffected.
         public var paragraphGap: TimeInterval = 2.0
+        /// Carry Parakeet's TDT decoder state from one segment into the next. OFF by
+        /// default since 2026-09-23: replaying files through this pipeline showed the
+        /// carried state LOSING words it was meant to protect — a short "Yes." after
+        /// "Okay." and a 1.3 s pause came back empty, and the word straddling a 14 s
+        /// length-cap split lost its first half ("end up. .powered"). The same audio
+        /// with a fresh state per segment matched the one-shot reference word for
+        /// word. `spiel-cli replay <file>` is the reproduction; when true, context is
+        /// dropped only across a `paragraphGap` pause, the old behaviour.
+        public var carryDecoderContext: Bool = false
+        /// How far back from the length cap to look for a quiet point to split at.
+        /// The carried tail counts toward the next segment's cap, so this is also
+        /// the most a cap split can move into the next segment.
+        public var capSplitSearch: TimeInterval = 4.0
         public init() {}
     }
 
@@ -349,7 +362,23 @@ public actor DictationSession {
             speechRun += seconds
             silenceRun = 0
             if speechRun >= config.maxSegmentDuration {
+                // Continuous speech hit the length cap. Cutting at this frame edge
+                // lands mid-word as often as not, and the engine then garbles or
+                // duplicates the straddling word on both sides (replay, 2026-09-23:
+                // "a guarantee" → "to quarantie"). Cut instead at the quietest 20 ms
+                // of the last few seconds — almost always a gap between words — and
+                // carry the remainder into the next segment.
+                let tail = Self.quietestSplitTail(current, searchSeconds: config.capSplitSearch)
+                if !tail.isEmpty { current.removeLast(tail.count) }
+                let tailSpeech = Double(tail.count) / AudioCapture.sampleRate
                 await closeSegment()
+                if !tail.isEmpty {
+                    speaking = true
+                    current = tail
+                    speechRun = tailSpeech
+                    segmentStartSample = processedSamples - tail.count
+                    segmentGapSamples = 0
+                }
             }
         } else if speaking {
             if silenceRun == 0 { lastSpeechEndSample = frameStart }  // speech just ended
@@ -366,6 +395,30 @@ public actor DictationSession {
                 preRollBuffer.removeFirst(preRollBuffer.count - maxPre)
             }
         }
+    }
+
+    /// The audio after the quietest 20 ms window in the last `searchSeconds` of
+    /// `audio` — what moves into the next segment when the length cap splits
+    /// continuous speech. Empty if the buffer is too short to search.
+    public static func quietestSplitTail(_ audio: [Float], searchSeconds: TimeInterval) -> [Float] {
+        // 80 ms, measured (replay, 11 TTS clips, 2026-09-23): a 20 ms window finds the
+        // silent closure inside a stop consonant ("expected" → "expect"); 120–300 ms
+        // windows were no better than 80 and sometimes worse. Hard cut: 9 diffs vs
+        // the one-shot reference, 7 of them words duplicated at the cut; 80 ms: 4.
+        let window = Int(0.08 * AudioCapture.sampleRate)
+        let hop = Int(0.01 * AudioCapture.sampleRate)
+        let search = Int(searchSeconds * AudioCapture.sampleRate)
+        guard window > 0, search > window * 2, audio.count > search else { return [] }
+        let start = audio.count - search
+        var best = start, bestEnergy = Float.greatestFiniteMagnitude
+        var i = start
+        while i + window <= audio.count - window {  // never cut in the final window: the tail must hold audio
+            var e: Float = 0
+            for j in i..<(i + window) { e += audio[j] * audio[j] }
+            if e < bestEnergy { bestEnergy = e; best = i }
+            i += hop
+        }
+        return Array(audio[(best + window / 2)...])
     }
 
     private func closeSegment() async {
@@ -394,7 +447,7 @@ public actor DictationSession {
         // Context carried across a long pause is noise, and across an hour it is
         // untested. Decide it here, at close, from the sample counter; the segment
         // task applies it in order, right before the engine call.
-        let dropContext = index > 0 && gapBefore >= config.paragraphGap
+        let dropContext = index > 0 && (!config.carryDecoderContext || gapBefore >= config.paragraphGap)
 
         // Segments are transcribed ONE AT A TIME, in capture order — each task waits
         // for the previous segment's task before it calls the engine. Two reasons,

@@ -17,6 +17,10 @@ func usage() -> Never {
       spiel-cli live [--seconds N] [--rounds N] [--engine parakeet|apple]
           --rounds runs N consecutive dictations on ONE session, which is what the
           app does across hotkey presses. Round 2 is the one that used to go deaf.
+      spiel-cli replay <audiofile> [--engine parakeet|apple] [--paragraph-gap N]
+          feed a file through the real VAD + segmenter + engine in mic-sized buffers
+          and print it beside a one-shot transcription of the same file — words the
+          one-shot has and the replay lacks were lost by segmentation.
 
     """.data(using: .utf8)!)
     exit(2)
@@ -167,6 +171,61 @@ case "live":
                 print("  TRANSCRIPT: \(report.text.isEmpty ? "(nothing captured)" : report.text)")
                 if report.droppedBuffers > 0 { exitCode = 3 }
             }
+        } catch {
+            FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
+            exitCode = 1
+        }
+    }
+    semaphore.wait()
+    exit(exitCode)
+
+case "replay":
+    // Feed an audio FILE through the real dictation pipeline (Silero VAD + segmenter
+    // + engine) in mic-sized buffers, and print it beside a one-shot transcription of
+    // the same file. The one-shot is the reference: words it has and the replay does
+    // not were lost by segmentation, not by the engine hearing them wrong. This is
+    // how "it drops chunks when I talk a lot" is reproduced without a microphone and
+    // without playing anything through a speaker.
+    guard args.count > 1 else { usage() }
+    let url = URL(fileURLWithPath: args[1])
+    let semaphore = DispatchSemaphore(value: 0)
+    var exitCode: Int32 = 0
+    Task.detached {
+        defer { semaphore.signal() }
+        do {
+            let samples = try AudioCapture.loadFile(at: url)
+            print("audio: \(String(format: "%.2f", Double(samples.count) / AudioCapture.sampleRate))s")
+            let reference = makeTranscriber(args)
+            try await reference.prepare()
+            let whole = try await reference.transcribe(samples: samples)
+
+            var config = DictationSession.Config()
+            if let g = arg("--paragraph-gap", in: args).flatMap(Double.init) { config.paragraphGap = g }
+            let session = DictationSession(transcriber: makeTranscriber(args), config: config)
+            try await session.prepare()
+            await session.setEventHandler { event in
+                switch event {
+                case .speechStarted: break
+                case .segmentCaptured(let i, let s):
+                    print("  [segment \(i): \(String(format: "%.2f", s))s]")
+                case .textReleased(let t, let at, let gap):
+                    print("  > [\(String(format: "%.2f", at))s, gap \(String(format: "%.2f", gap))s] \(t)")
+                case .error(let e, _, _): print("  ! \(e)")
+                }
+            }
+            await session.reset()
+            var i = 0
+            while i < samples.count {
+                let end = min(i + 341, samples.count)
+                session.sink.submit(Array(samples[i..<end]))
+                i = end
+            }
+            let report = await session.finishWithReport()
+            let refWords = whole.split(separator: " ").count
+            let gotWords = report.text.split(separator: " ").count
+            print("diagnosis : \(report.diagnosis)")
+            print("REFERENCE (\(refWords) words): \(whole)")
+            print("PIPELINE  (\(gotWords) words): \(report.text)")
         } catch {
             FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
             exitCode = 1
