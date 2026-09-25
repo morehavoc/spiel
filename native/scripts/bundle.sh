@@ -34,7 +34,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>com.morehavoc.spiel</string>
     <key>CFBundleExecutable</key><string>Spiel</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>2.3.1</string>
+    <key>CFBundleShortVersionString</key><string>2.3.2</string>
     <key>CFBundleVersion</key><string>3</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>

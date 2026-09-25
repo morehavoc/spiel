@@ -78,6 +78,10 @@ final class RecordingPanel {
         p.hidesOnDeactivate = false
         p.isOpaque = false
         p.backgroundColor = .clear
+        // The panel paints its own dark background, so its controls must render in
+        // dark appearance too. Under a light system appearance the buttons drew dark
+        // labels on a dark bezel — Pause/Stop illegible (Christopher, 2026-09-25).
+        p.appearance = NSAppearance(named: .darkAqua)
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
