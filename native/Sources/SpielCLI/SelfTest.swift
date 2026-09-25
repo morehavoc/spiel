@@ -342,6 +342,43 @@ enum SelfTest {
                "ids are the EventHotKeyID values the Carbon callback reads back (1 dictation, 2 listen)")
     }
 
+    /// The guard only protects dictation if `transcribe()` actually routes through it,
+    /// and that path needs the models, which selftest never loads. So the wiring is
+    /// pinned on the source, comments stripped: rescored text must pass guardRepairs,
+    /// and boosting must never be configured on the manager — if it were, the "raw"
+    /// text handed to the guard would already carry the rewrites it exists to refuse.
+    static func boostSourceRules() {
+        print("\nVocabulary boost guard — transcriber wiring (source)")
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var file: URL?
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("Sources/SpielCore/ParakeetUnifiedTranscriber.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) { file = candidate; break }
+            dir.deleteLastPathComponent()
+        }
+        guard let file, let src = try? String(contentsOf: file, encoding: .utf8) else {
+            print("  – SKIPPED: ParakeetUnifiedTranscriber.swift not found beside this binary (nothing asserted)")
+            return
+        }
+        let code = src.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                if let r = line.range(of: "//") { return String(line[..<r.lowerBound]) }
+                return String(line)
+            }.joined(separator: "\n")
+        guard let start = code.range(of: "public func transcribe(samples:") else {
+            expect("missing", "found", "transcribe(samples:) exists")
+            return
+        }
+        let rest = code[start.upperBound...]
+        let body = String(rest[..<(rest.range(of: "\n    public ")?.lowerBound ?? rest.endIndex)])
+        expect(body.contains("Self.guardRepairs(raw: raw, rescored: out.text)") && body.contains("return guarded.text") ? "guarded" : "unguarded",
+               "guarded", "transcribe() passes the boost's output through guardRepairs and returns the guarded text")
+        expect(body.contains("return out.text") ? "leaks" : "clean", "clean",
+               "transcribe() never returns the rescorer's text directly")
+        expect(code.contains("configureVocabularyBoosting") ? "manager-boosted" : "clean", "clean",
+               "boosting is never configured on the manager (its rewrites would reach the guard as 'raw')")
+    }
+
     /// Source-anchored rules the CLI cannot exercise at runtime (the app is AppKit).
     /// Finds the package root by walking up from this executable; if the source is
     /// not beside the binary (an installed CLI), the section is SKIPPED and says so
@@ -690,6 +727,79 @@ enum SelfTest {
         expect(ParakeetUnifiedTranscriber.isBoostable("MoE") ? "boost" : "skip", "skip", "a term under 4 letters is not boosted")
         expect(ParakeetUnifiedTranscriber.isBoostable("Deskbot") ? "boost" : "skip", "boost", "a non-word with no close dictionary neighbour (Deskbot) IS boosted")
         expect(ParakeetUnifiedTranscriber.isBoostable("Newsologue") ? "boost" : "skip", "boost", "Newsologue IS boosted")
+        // 2026-09-25: FluidAudio's spotter-anchored rescue runs only for lists of 10
+        // terms or fewer — the built-in list boosts 7 — and it swapped "CEOs" for
+        // GeoJSON and "what" for ArcPy in Christopher's dictation. Off at every size.
+        expect(ParakeetUnifiedTranscriber.rescorerConfig.spotterRescueEnabled ? "on" : "off", "off",
+               "the acoustic rescue pass is off (it rewrote ordinary words on a short list)")
+        expect(ParakeetUnifiedTranscriber.rescorerConfig230.spotterRescueEnabled ? "on" : "off", "on",
+               "boost-eval's 2.3.0 comparison arm still has the rescue on (else the eval compares nothing)")
+
+        print("\nVocabulary boost guard — repairs non-words, never overwrites English")
+        do {
+            // Stub dictionary, so these pin the alignment and the rule, not macOS's word list.
+            let english: Set<String> = ["i", "have", "a", "goal", "and", "plan", "but", "what", "want",
+                                        "to", "know", "run", "locally", "ask", "whether", "the", "llama",
+                                        "push", "it", "in", "open", "new", "window", "so", "export",
+                                        "more", "runs", "x", "y"]
+            let isWord: (String) -> Bool = {
+                english.contains($0.lowercased().trimmingCharacters(in: .punctuationCharacters))
+            }
+            func guarded(_ raw: String, _ rescored: String) -> String {
+                ParakeetUnifiedTranscriber.guardRepairs(raw: raw, rescored: rescored, isWord: isWord).text
+            }
+            expect(guarded("I have a goal and a plan.", "I have AGOL and a plan."), "I have a goal and a plan.",
+                   "\"a goal\" → AGOL is refused: both words are English (measured 6 of 6 unguarded)")
+            expect(guarded("but what I want to know", "but ArcPy I want to know"), "but what I want to know",
+                   "\"what\" → ArcPy is refused (Christopher's 2026-09-25 dictation)")
+            expect(guarded("Run Olama locally.", "Run Ollama locally."), "Run Ollama locally.",
+                   "a non-word (Olama) is repaired")
+            expect(guarded("push it to a gol.", "push it to AGOL"), "push it to AGOL.",
+                   "a kept repair gets back the trailing punctuation the rescorer drops")
+            expect(guarded("Ask Ezri whether the llama", "Ask Esri whether the Ollama"), "Ask Esri whether the llama",
+                   "in one segment, the non-word repair lands and the English overwrite does not")
+            let r = ParakeetUnifiedTranscriber.guardRepairs(raw: "Ask Ezri whether the llama",
+                                                            rescored: "Ask Esri whether the Ollama", isWord: isWord)
+            expect(r.repairs.map { "\($0.from)→\($0.to):\($0.kept)" }.joined(separator: ","),
+                   "Ezri→Esri:true,llama→Ollama:false", "each rewrite is reported with its verdict")
+            expectInt(ParakeetUnifiedTranscriber.guardRepairs(raw: "  I have a goal ", rescored: "I have a goal",
+                                                              isWord: isWord).repairs.count, 0,
+                      "whitespace differences are not rewrites")
+            // Measured on 2.3.0 output: a span rewrite followed by a repeat of one of its
+            // words split into an insert + a delete under the other tie-break.
+            let merged = ParakeetUnifiedTranscriber.guardRepairs(
+                raw: "just AI and GIS, and then", rescored: "just AI ArcGIS and then", isWord: { _ in false })
+            expect(merged.repairs.map { "\($0.from)→\($0.to)" }.joined(separator: ","), "and GIS,→ArcGIS",
+                   "a span rewrite next to a repeated word is ONE hunk, not an insert plus a delete")
+            expect(ParakeetUnifiedTranscriber.guardRepairs(raw: "the Olama the", rescored: "the the",
+                                                           isWord: { _ in false }).text, "the Olama the",
+                   "a pure deletion is refused even when everything is a non-word")
+            // Review 2026-09-25, each reproduced before the fix:
+            expect(guarded("In Dimaptic, open a new window.", "In Dymaptic OpenAI new window."),
+                   "In Dimaptic, open a new window.",
+                   "two adjacent rewrites cannot let a non-word carry an English overwrite (open a → OpenAI)")
+            expect(guarded("so Olama Ollama GOJSON export", "so Ollama Ollama GeoJSON export"),
+                   "so Ollama Ollama GeoJSON export",
+                   "a repair next to a repeat of its term aligns as a substitution — no duplicated word")
+            expect(guarded("Ezri llama", "Esri Ollama"), "Esri llama",
+                   "as many terms as words: each pair is decided alone")
+            expect(guarded("Ezri, GOJSON, and more", "Esri GeoJSON and more"), "Esri, GeoJSON, and more",
+                   "each kept word of a pair gets its own punctuation back")
+            expect(guarded("(Olama) runs", "Ollama runs"), "(Ollama) runs",
+                   "leading punctuation is restored too")
+            expect(guarded("x Olama y", "x Ollama Ollama y"), "x Olama y",
+                   "more terms than words is not a rescorer shape — refused, never duplicated")
+            // The real checker, for the tokens this rule was built on.
+            let word = ParakeetUnifiedTranscriber.isDictionaryWord
+            expect(word("goal") && word("what") && word("CEOs") && word("llama") ? "words" : "miss", "words",
+                   "goal, what, CEOs, llama are dictionary words (the misfired-on words)")
+            expect(!word("GOJSON") && !word("Olama") && !word("Dimaptic") ? "non-words" : "miss", "non-words",
+                   "GOJSON, Olama, Dimaptic are not (ALL-CAPS is checked lowercased, not waved through)")
+            expect(word("Kevin") && word("4") ? "kept" : "miss", "kept",
+                   "a capitalised name and a bare number count as words — never repaired")
+            expect(word("CEO") && word("MCP,") && !word("SP32") ? "ok" : "miss", "ok",
+                   "short ALL-CAPS acronyms count as words; a letters+digits token (SP32) stays repairable")
+        }
         do {
             actor VocabStub: Transcriber {
                 nonisolated let kind: TranscriberKind = .parakeet
@@ -1026,6 +1136,7 @@ enum SelfTest {
         transcriptStoreTests()
         hotkeyRoutingTests()
         listenSourceRules()
+        boostSourceRules()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

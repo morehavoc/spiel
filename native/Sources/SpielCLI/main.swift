@@ -17,10 +17,17 @@ func usage() -> Never {
       spiel-cli live [--seconds N] [--rounds N] [--engine unified|v3|v2|apple]
           --rounds runs N consecutive dictations on ONE session, which is what the
           app does across hotkey presses. Round 2 is the one that used to go deaf.
-      spiel-cli replay <audiofile> [--engine unified|v3|v2|apple] [--no-boost] [--no-glossary] [--paragraph-gap N]
+      spiel-cli replay <audiofile> [--engine unified|v3|v2|apple] [--no-boost] [--no-glossary] [--paragraph-gap N] [--vocab builtin|<file>]
           feed a file through the real VAD + segmenter + engine in mic-sized buffers
           and print it beside a one-shot transcription of the same file — words the
           one-shot has and the replay lacks were lost by segmentation.
+      spiel-cli boost-eval <audiofile>... [--vocab builtin|<file>]
+          run each file through the real VAD + segmenter, transcribe every segment
+          once unboosted, then rescore that same text three ways — as 2.3.0 shipped,
+          with the rescue pass off, and with it off plus the non-word guard (what
+          ships now) — and print every rewrite each one made or refused.
+          --vocab builtin = the compiled-in list only (what a Mac with no
+          vocabulary.txt, or only the Edit Vocabulary… template, dictates with).
 
     """.data(using: .utf8)!)
     exit(2)
@@ -29,6 +36,83 @@ func usage() -> Never {
 func arg(_ name: String, in args: [String]) -> String? {
     guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
     return args[i + 1]
+}
+
+/// `--vocab builtin` = compiled-in terms only; `--vocab <file>` = that file merged over
+/// them; no flag = what the app loads (the user's vocabulary.txt over the built-ins).
+func loadVocabulary(_ args: [String]) -> Glossary {
+    switch arg("--vocab", in: args) {
+    case nil: return Glossary.load()
+    case "builtin": return Glossary()
+    case let path?:
+        // Glossary.load falls back to the built-ins on an unreadable file — right for
+        // the app, wrong here: list size decides whether FluidAudio's rescue pass runs,
+        // so a typo would silently measure the other regime.
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            FileHandle.standardError.write("no readable vocabulary file at \(path)\n".data(using: .utf8)!)
+            exit(2)
+        }
+        return Glossary.load(userFile: URL(fileURLWithPath: path))
+    }
+}
+
+/// boost-eval's engine. DictationSession hands it each segment exactly as the app
+/// would; it transcribes the segment ONCE with no boost, then rescores that same text
+/// and token timings under every config — so any difference between configs is the
+/// rescorer's doing, never a different segmentation or a different first pass.
+actor BoostProbe: Transcriber {
+    /// Arms, in print order: what 2.3.0 shipped; the rescue pass off alone; the rescue
+    /// pass off plus the non-word guard, which is what ships now.
+    static let arms = ["2.3.0     ", "rescue off", "2.3.1     "]
+    struct Record: Sendable {
+        let file: String
+        let raw: String
+        let texts: [String]
+        let repairs: [[ParakeetUnifiedTranscriber.BoostRepair]]
+    }
+    nonisolated let kind: TranscriberKind = .parakeet
+    private let manager: UnifiedAsrManager
+    private let shipped230: VocabularyBoostingSession
+    private let current: VocabularyBoostingSession
+    private var file = ""
+    private(set) var records: [Record] = []
+
+    init(manager: UnifiedAsrManager, shipped230: VocabularyBoostingSession, current: VocabularyBoostingSession) {
+        self.manager = manager
+        self.shipped230 = shipped230
+        self.current = current
+    }
+
+    func setFile(_ name: String) { file = name }
+    func prepare() async throws {}
+
+    func transcribe(samples: [Float]) async throws -> String {
+        let input = ParakeetUnifiedTranscriber.padded(samples)
+        let first = try await manager.transcribeWithTimings(input)
+        let raw = first.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let old = await shipped230.rescore(
+            text: first.text, tokenTimings: first.tokenTimings, audioSamples: input)?.text ?? raw
+        let new = await current.rescore(
+            text: first.text, tokenTimings: first.tokenTimings, audioSamples: input)?.text ?? raw
+        // The unguarded arms print the rescorer's text verbatim — what that setting
+        // actually output, deletions and dropped punctuation included — with each
+        // aligned hunk listed as applied. Only the last arm goes through the guard.
+        func applied(_ rescored: String) -> (text: String, repairs: [ParakeetUnifiedTranscriber.BoostRepair]) {
+            let hunks = ParakeetUnifiedTranscriber.align(raw: raw, rescored: rescored).compactMap {
+                run -> ParakeetUnifiedTranscriber.BoostRepair? in
+                guard case let .hunk(from, to) = run else { return nil }
+                return .init(from: from.joined(separator: " "), to: to.joined(separator: " "), kept: true)
+            }
+            return (rescored.trimmingCharacters(in: .whitespacesAndNewlines), hunks)
+        }
+        let results = [
+            applied(old),
+            applied(new),
+            ParakeetUnifiedTranscriber.guardRepairs(raw: raw, rescored: new),
+        ]
+        records.append(Record(file: file, raw: raw, texts: results.map(\.text), repairs: results.map(\.repairs)))
+        return raw
+    }
 }
 
 func makeTranscriber(_ args: [String]) -> any Transcriber {
@@ -217,7 +301,7 @@ case "replay":
             }
             // Same vocabulary the app loads (user file merged over built-ins), with or
             // without the boost, so a boost comparison changes exactly one thing.
-            let g = args.contains("--no-glossary") ? Glossary(entries: [:]) : Glossary.load()
+            let g = args.contains("--no-glossary") ? Glossary(entries: [:]) : loadVocabulary(args)
             await session.setGlossary(g)
             // Configure the boost synchronously here (the app does it off the critical
             // path) so the replay measures a boosted run from sample 0.
@@ -240,6 +324,89 @@ case "replay":
             print("diagnosis : \(report.diagnosis)")
             print("REFERENCE (\(refWords) words): \(whole)")
             print("PIPELINE  (\(gotWords) words): \(report.text)")
+        } catch {
+            FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
+            exitCode = 1
+        }
+    }
+    semaphore.wait()
+    exit(exitCode)
+
+case "boost-eval":
+    // Which words does the acoustic vocabulary boost change, under which settings?
+    // Built for the 2026-09-25 misfires ("CEOs" → GeoJSON, "what" → ArcPy): 2.3.0 was
+    // measured with a 249-term list, and the rescorer behaves differently at 10 terms
+    // or fewer — so the list is a flag here, not whatever this Mac happens to have.
+    var files: [String] = []
+    var k = 1
+    while k < args.count {
+        if args[k] == "--vocab" { k += 2; continue }
+        files.append(args[k]); k += 1
+    }
+    guard !files.isEmpty else { usage() }
+    let semaphore = DispatchSemaphore(value: 0)
+    var exitCode: Int32 = 0
+    Task.detached {
+        defer { semaphore.signal() }
+        do {
+            let glossary = loadVocabulary(args)
+            let manager = UnifiedAsrManager()
+            try await manager.loadModels()
+            let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+            let tokenizer = try await CtcTokenizer.load(
+                from: CtcModels.defaultCacheDirectory(for: .ctc110m))
+            let terms = ParakeetUnifiedTranscriber.boostTerms(glossary.entries, tokenizer: tokenizer)
+            print("vocabulary: \(glossary.entries.count) terms, \(terms.count) boosted: \(terms.map(\.text).joined(separator: ", "))")
+            let context = ParakeetUnifiedTranscriber.boostContext(terms)
+            let probe = BoostProbe(
+                manager: manager,
+                shipped230: try await VocabularyBoostingSession(
+                    vocabulary: context, ctcModels: ctcModels,
+                    config: ParakeetUnifiedTranscriber.rescorerConfig230),
+                current: try await VocabularyBoostingSession(
+                    vocabulary: context, ctcModels: ctcModels,
+                    config: ParakeetUnifiedTranscriber.rescorerConfig))
+            let session = DictationSession(transcriber: probe, glossary: Glossary(entries: [:]))
+            try await session.prepare()
+            for path in files {
+                let url = URL(fileURLWithPath: path)
+                let samples = try AudioCapture.loadFile(at: url)
+                await probe.setFile(url.lastPathComponent)
+                await session.reset()
+                var i = 0
+                while i < samples.count {
+                    let end = min(i + 341, samples.count)
+                    session.sink.submit(Array(samples[i..<end]))
+                    i = end
+                }
+                let report = await session.finishWithReport()
+                if report.segments == 0 { print("! \(url.lastPathComponent): \(report.diagnosis)") }
+            }
+            let records = await probe.records
+            func describe(_ repairs: [ParakeetUnifiedTranscriber.BoostRepair]) -> String {
+                repairs.map { "\($0.from) → \($0.to)\($0.kept ? "" : " (refused)")" }.joined(separator: "; ")
+            }
+            for r in records where r.repairs.contains(where: { !$0.isEmpty }) {
+                print("\n[\(r.file)]")
+                print("  raw        : \(r.raw)")
+                for (c, label) in BoostProbe.arms.enumerated() {
+                    print("  \(label) : \(r.repairs[c].isEmpty ? "(unchanged)" : "\(r.texts[c])   [\(describe(r.repairs[c]))]")")
+                }
+            }
+            let words = records.reduce(0) { $0 + $1.raw.split(separator: " ").count }
+            print("\n\(files.count) files, \(records.count) segments, \(words) words transcribed")
+            func tally(_ repairs: [ParakeetUnifiedTranscriber.BoostRepair]) -> String {
+                var t: [String: Int] = [:]
+                for x in repairs { t["\(x.from) → \(x.to)", default: 0] += 1 }
+                return t.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                    .map { $0.value > 1 ? "\($0.key) ×\($0.value)" : $0.key }.joined(separator: "; ")
+            }
+            for (c, label) in BoostProbe.arms.enumerated() {
+                let all = records.flatMap { $0.repairs[c] }
+                let kept = all.filter(\.kept), refused = all.filter { !$0.kept }
+                print("\(label) : \(kept.count) rewrite(s)\(kept.isEmpty ? "" : " — \(tally(kept))")")
+                if !refused.isEmpty { print("             refused \(refused.count): \(tally(refused))") }
+            }
         } catch {
             FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
             exitCode = 1
