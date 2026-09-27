@@ -7,6 +7,11 @@ let package = Package(
     products: [
         .library(name: "SpielCore", targets: ["SpielCore"]),
         .executable(name: "spiel-cli", targets: ["SpielCLI"]),
+        // The user-facing `spiel` command. Built as `spiel-tool` because SwiftPM puts
+        // every executable in one folder and APFS is case-insensitive: a product named
+        // `spiel` would be the same file as the app's `Spiel`. bundle.sh installs it
+        // as Spiel.app/Contents/Helpers/spiel.
+        .executable(name: "spiel-tool", targets: ["SpielTool"]),
         .executable(name: "Spiel", targets: ["SpielApp"]),
     ],
     dependencies: [
@@ -24,6 +29,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("Carbon")]
         ),
         .executableTarget(name: "SpielCLI", dependencies: ["SpielCore"]),
+        .executableTarget(name: "SpielTool", dependencies: ["SpielCore"]),
         .executableTarget(
             name: "SpielApp",
             dependencies: ["SpielCore"],

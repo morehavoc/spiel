@@ -87,8 +87,10 @@ public actor DictationSession {
         /// segment's last speech and this one's onset; for the first segment it is
         /// the idle time since `reset()`. Both are captured at segment OPEN and
         /// carried through the transcribe task, because this event fires after
-        /// transcription, possibly seconds later.
-        case textReleased(String, startOffset: TimeInterval, gapBefore: TimeInterval)
+        /// transcription, possibly seconds later. `endOffset` is where that speech
+        /// ended on the same counter (VAD-frame resolution, 256 ms) — what a file
+        /// transcript's SRT/VTT cue needs (2.5).
+        case textReleased(String, startOffset: TimeInterval, gapBefore: TimeInterval, endOffset: TimeInterval)
         /// A segment the engine failed on. Carries where it was and how long, so a
         /// long-running consumer can mark the hole (`[missed ~8 s at 31:07]`).
         case error(String, startOffset: TimeInterval, seconds: Double)
@@ -380,7 +382,7 @@ public actor DictationSession {
                 let tail = Self.quietestSplitTail(current, searchSeconds: config.capSplitSearch)
                 if !tail.isEmpty { current.removeLast(tail.count) }
                 let tailSpeech = Double(tail.count) / AudioCapture.sampleRate
-                await closeSegment()
+                await closeSegment(endSample: processedSamples - tail.count)
                 if !tail.isEmpty {
                     speaking = true
                     current = tail
@@ -430,7 +432,10 @@ public actor DictationSession {
         return Array(audio[(best + window / 2)...])
     }
 
-    private func closeSegment() async {
+    /// `endSample` is where the segment's speech ended, when the caller knows better
+    /// than the silence run (a length-cap split, a finish); nil = the first silent
+    /// frame, or now if speech never stopped.
+    private func closeSegment(endSample: Int? = nil) async {
         let audio = current
         current.removeAll()
         preRollBuffer.removeAll()
@@ -445,6 +450,7 @@ public actor DictationSession {
         let sr = AudioCapture.sampleRate
         let startOffset = Double(segmentStartSample) / sr
         let gapBefore = max(0, Double(segmentGapSamples) / sr)
+        let endOffset = max(startOffset, Double(endSample ?? lastSpeechEndSample) / sr)
 
         guard spoke >= config.minSpeechDuration, !audio.isEmpty else { return }
 
@@ -489,7 +495,8 @@ public actor DictationSession {
                     // this segment's own text and the offsets captured at its open
                     // describe it.
                     eventHandler?(.textReleased(glossary.apply(to: released),
-                                                startOffset: startOffset, gapBefore: gapBefore))
+                                                startOffset: startOffset, gapBefore: gapBefore,
+                                                endOffset: endOffset))
                 }
             } catch {
                 if Task.isCancelled { return }
@@ -530,13 +537,18 @@ public actor DictationSession {
         // is open. (`pending` is always shorter than one 256 ms frame here —
         // `ingest` drains whole frames — so a sub-frame tail with no open segment
         // is at most 256 ms of audio the VAD never called speech; it is dropped.)
+        // A segment still speaking at finish ends at the last sample it holds.
+        var finishEnd: Int? = speaking && silenceRun == 0 ? processedSamples : nil
         if !pending.isEmpty {
-            if speaking { current.append(contentsOf: pending) }
+            if speaking {
+                current.append(contentsOf: pending)
+                if finishEnd != nil { finishEnd = processedSamples + pending.count }
+            }
             pending.removeAll()
         }
         if speaking || !current.isEmpty {
             speechRun = max(speechRun, config.minSpeechDuration)
-            await closeSegment()
+            await closeSegment(endSample: finishEnd)
         }
 
         for t in inFlight { _ = await t.value }

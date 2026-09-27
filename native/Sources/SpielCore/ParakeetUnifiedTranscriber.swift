@@ -33,7 +33,13 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
     public private(set) var boostTermCount = 0
     public private(set) var boostError: String?
 
-    public init(boost: Bool = true) { self.boostEnabled = boost }
+    /// Download progress for the model load (first run fetches ~615 MB); nil = none.
+    private let progress: ModelProgressHandler?
+
+    public init(boost: Bool = true, progress: ModelProgressHandler? = nil) {
+        self.boostEnabled = boost
+        self.progress = progress
+    }
 
     // Frozen 2026-09-23 on 1,899 words of Christopher's speech + 435 words of
     // jargon-dense TTS (spiel-cli replay, user vocabulary loaded in both arms):
@@ -71,7 +77,7 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
         if manager != nil { return }
         do {
             let m = UnifiedAsrManager()
-            try await m.loadModels()
+            try await m.loadModels(progressHandler: ModelLoadProgress.handler(progress))
             manager = m
         } catch {
             throw TranscriberError.unavailable("Parakeet Unified model load failed: \(error)")

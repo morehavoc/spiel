@@ -133,6 +133,7 @@ public struct SpielSettings {
     public static let microphoneNameKey = "MicrophoneName"
     public static let engineKey = "Engine"
     public static let historyEnabledKey = "HistoryEnabled"
+    public static let setupCompletedKey = "SetupCompleted"
 
     /// Stored as `[keyCode, modifiers]`; the label is re-derived on read. A stored
     /// combo that fails the rules (hand-edited defaults, an older rule set) reads as
@@ -190,5 +191,12 @@ public struct SpielSettings {
     public var historyEnabled: Bool {
         get { (defaults.object(forKey: Self.historyEnabledKey) as? Bool) ?? true }
         nonmutating set { defaults.set(newValue, forKey: Self.historyEnabledKey) }
+    }
+    /// The first-run setup window was finished or dismissed (2.5). Unset on a
+    /// fresh install; an upgrade with every permission already granted gets it set
+    /// silently at launch (`SetupChecklist.launchDecision`).
+    public var setupCompleted: Bool {
+        get { defaults.bool(forKey: Self.setupCompletedKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.setupCompletedKey) }
     }
 }

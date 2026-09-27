@@ -99,6 +99,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// puts the previous combo back.
     private var quietHotkeyFailures = false
 
+    // MARK: 2.5 — first-run setup
+    private let setupModel = SetupModel()
+    private var setupWindow: NSWindow?
+    /// 1 s poll of the permissions while the setup window is open.
+    private var setupPoll: Timer?
+    /// The window was opened by the launch decision (not the menu), so closing it
+    /// is where the launch-time permission requests it replaced still happen.
+    private var setupShownAtLaunch = false
+    /// Last integer percent pushed to the window, so a progress callback per
+    /// network chunk does not redraw SwiftUI hundreds of times a second.
+    private var lastModelPercent = -1
+    /// The chosen model was complete on disk when warm-up began. FluidAudio still
+    /// reports a file walk for a cached model; that is not a download to show.
+    private var modelWasOnDisk = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLog.write("launch — Spiel \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") pid \(ProcessInfo.processInfo.processIdentifier)")
         // Two copies of Spiel (an older build left running while a new one is
@@ -124,25 +139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         updateStatusItem()
 
-        // Ask for every permission at LAUNCH, not on the first hotkey press. The first
-        // test build asked for the mic on the first ⌘⇧D, which meant the entire first
-        // dictation was spent looking at a TCC dialog while the engine ran on silence,
-        // and asked for notification permission only when it first had something to
-        // say — so that first message was lost too.
-        Notifier.requestAuthorization()
-        Task {
-            let auth = AudioCapture.microphoneAuthorization()
-            DiagnosticLog.write("microphone permission at launch: \(auth.rawValue); default input: \(AudioCapture.defaultInputDeviceName())")
-            if auth == .notDetermined {
-                let granted = await AudioCapture.requestMicrophoneAccess()
-                DiagnosticLog.write("microphone permission prompt → \(granted ? "granted" : "denied")")
-            }
-        }
-        if !TextInserter.hasAccessibilityPermission() {
-            DiagnosticLog.write("accessibility NOT effective at launch — prompting. If System Settings already shows Spiel ON, that grant belongs to a differently-signed build: remove it and re-add. Signature: \(Self.signatureSummary())")
-            TextInserter.requestAccessibilityPermission()
-            startAccessibilityPoll()
-        }
+        // Permissions are still asked for at LAUNCH, never on the first hotkey press
+        // (see `requestPermissionsAtLaunch`) — but since 2.5 a fresh install gets the
+        // setup window instead, which asks for each one with its reason beside it.
+        // An upgrade with everything already granted sees no window at all.
+        Task { await self.decideSetupAtLaunch() }
 
         installMainMenu()
         let loaded = DictationHistory.load()
@@ -199,6 +200,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return line.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "no designated requirement (unsigned?)"
     }
 
+    /// Ask for every permission at LAUNCH, not on the first hotkey press. The first
+    /// test build asked for the mic on the first ⌘⇧D, which meant the entire first
+    /// dictation was spent looking at a TCC dialog while the engine ran on silence,
+    /// and asked for notification permission only when it first had something to
+    /// say — so that first message was lost too. Since 2.5 this runs when the setup
+    /// window is NOT shown (setup done before, or nothing missing); when it is, the
+    /// window's own buttons ask, and closing it runs `foldPermissionsAfterSetup`.
+    private func requestPermissionsAtLaunch() {
+        Notifier.requestAuthorization()
+        Task {
+            let auth = AudioCapture.microphoneAuthorization()
+            DiagnosticLog.write("microphone permission at launch: \(auth.rawValue); default input: \(AudioCapture.defaultInputDeviceName())")
+            if auth == .notDetermined {
+                let granted = await AudioCapture.requestMicrophoneAccess()
+                DiagnosticLog.write("microphone permission prompt → \(granted ? "granted" : "denied")")
+            }
+        }
+        if !TextInserter.hasAccessibilityPermission() {
+            DiagnosticLog.write("accessibility NOT effective at launch — prompting. If System Settings already shows Spiel ON, that grant belongs to a differently-signed build: remove it and re-add. Signature: \(Self.signatureSummary())")
+            TextInserter.requestAccessibilityPermission()
+            startAccessibilityPoll()
+        }
+    }
+
     /// Accessibility grants do not notify the app; the first build needed a restart
     /// before the warning triangle went away. Poll cheaply until it is granted.
     private func startAccessibilityPoll() {
@@ -237,9 +262,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeTranscriber(_ choice: EngineChoice) -> Transcriber {
+        // Download progress reaches the setup window. DispatchQueue.main, not a
+        // Task per callback: Tasks do not run in submission order, and a bar that
+        // steps backwards is worse than none.
+        let progress: ModelProgressHandler = { [weak self] p in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.noteModelProgress(p, choice: choice) } }
+        }
         switch choice {
-        case .unified: return ParakeetUnifiedTranscriber()
-        case .v3: return ParakeetTranscriber()
+        case .unified: return ParakeetUnifiedTranscriber(progress: progress)
+        case .v3: return ParakeetTranscriber(progress: progress)
         case .apple: return AppleSpeechTranscriber()
         }
     }
@@ -253,6 +284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer { isWarming = false; updateStatusItem() }
         let t0 = Date()
         let chosen = settings.engine
+        lastModelPercent = -1
+        setupModel.engine = chosen
+        modelWasOnDisk = SpeechModels.isDownloaded(chosen)
+        setupModel.model = modelWasOnDisk ? .compiling : .checking
         var failures: [String] = []
         for choice in EngineChoice.fallbackOrder(chosen) {
             do {
@@ -260,6 +295,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.session = s
                 self.engineName = choice.engineName
                 self.engineReady = true
+                setupModel.model = choice == chosen
+                    ? .ready(engine: SpeechModels.displayName(choice), bytes: SpeechModels.bytesOnDisk(choice))
+                    : .fallback(using: SpeechModels.displayName(choice), error: failures.first ?? "unknown error")
                 self.lastError = choice == chosen ? nil : "\(chosen.engineName) unavailable, using \(choice.engineName)"
                 DiagnosticLog.write("engine ready: \(choice.engineName)\(choice == chosen ? "" : " (fallback from \(chosen.engineName))") (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
                 // Prime the vocabulary boost now (first launch downloads its ~98 MB
@@ -274,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.engineReady = false
         self.lastError = "no speech engine could load: \(failures.joined(separator: "; "))"
+        setupModel.model = .failed(failures.joined(separator: "\n"))
         DiagnosticLog.write("NO engine could load")
     }
 
@@ -287,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setStatus("Listening…")
         case .segmentCaptured:
             panel.setStatus("Transcribing…")
-        case .textReleased(let t, _, _):
+        case .textReleased(let t, _, _, _):
             previewText = previewText.isEmpty ? t : previewText + " " + t
             panel.setTranscript(TranscriptAssembler.tidy(previewText))
             panel.setStatus("Listening…")
@@ -302,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch event {
         case .speechStarted, .segmentCaptured:
             break
-        case .textReleased(let t, let at, let gap):
+        case .textReleased(let t, let at, let gap, _):
             let before = doc.paragraphs.count
             doc.append(text: t, startOffset: at, gapBefore: gap)
             listenDoc = doc
@@ -1037,6 +1076,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let setupItem = NSMenuItem(title: "Setup…", action: #selector(showSetupFromMenu), keyEquivalent: "")
+        setupItem.target = self
+        menu.addItem(setupItem)
+        let cliItem = NSMenuItem(title: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
+        cliItem.target = self
+        menu.addItem(cliItem)
         let help = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
         let diag = NSMenuItem(title: "Send Diagnostics…", action: #selector(sendDiagnostics), keyEquivalent: "")
@@ -1434,6 +1479,7 @@ extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Closing Settings mid-recording must give the hotkeys back.
         if (notification.object as? NSWindow) === settingsWindow { settingsModel.cancelRecording() }
+        if (notification.object as? NSWindow) === setupWindow { setupClosed() }
     }
 
     /// An accessory app has no menu bar of its own, but key equivalents are routed
@@ -1559,6 +1605,252 @@ extension AppDelegate: NSWindowDelegate {
             // Quotes stripped: the report blanks quoted spans, and this one is not private.
             ("Signature", Self.signatureSummary().replacingOccurrences(of: "\"", with: "")),
         ]
+    }
+}
+
+// MARK: - 2.5: first-run setup window, command-line tool
+
+extension AppDelegate {
+
+    /// Launch: open the setup window on a fresh install, mark it done silently for
+    /// an upgrade that already has everything, otherwise the pre-2.5 launch path.
+    fileprivate func decideSetupAtLaunch() async {
+        let checklist = await currentChecklist()
+        let decision = SetupChecklist.launchDecision(completed: settings.setupCompleted, checklist)
+        DiagnosticLog.write("setup at launch: \(decision) (still to do: \(checklist.remaining.isEmpty ? "nothing" : checklist.remaining.joined(separator: ", ")))")
+        switch decision {
+        case .show:
+            setupShownAtLaunch = true
+            showSetup()
+        case .markDone:
+            settings.setupCompleted = true
+            requestPermissionsAtLaunch()
+        case .skip:
+            requestPermissionsAtLaunch()
+        }
+    }
+
+    fileprivate func currentChecklist() async -> SetupChecklist {
+        SetupChecklist(microphone: AudioCapture.microphoneAuthorization(),
+                       accessibility: TextInserter.hasAccessibilityPermission(),
+                       notifications: await notificationState(),
+                       modelOnDisk: SpeechModels.isDownloaded(settings.engine))
+    }
+
+    fileprivate func notificationState() async -> SetupChecklist.Notifications {
+        // Unbundled (running out of .build) UNUserNotificationCenter throws; there
+        // is nothing to ask for there, so it counts as answered.
+        guard Bundle.main.bundleIdentifier != nil else { return .denied }
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .notDetermined: return .notDetermined
+        case .denied: return .denied
+        default: return .allowed
+        }
+    }
+
+    @objc fileprivate func showSetupFromMenu() { showSetup() }
+
+    fileprivate func showSetup() {
+        let m = setupModel
+        m.requestMicrophone = { [weak self] in
+            Task { @MainActor in
+                let granted = await AudioCapture.requestMicrophoneAccess()
+                DiagnosticLog.write("setup: microphone prompt → \(granted ? "granted" : "denied")")
+                self?.refreshSetupModel()
+            }
+        }
+        m.requestAccessibility = { [weak self] in
+            // The prompt call is what puts Spiel INTO the Accessibility list (so
+            // there is a switch to turn on); the pane is where he turns it on.
+            TextInserter.requestAccessibilityPermission()
+            SetupModel.openPrivacyPane("Privacy_Accessibility")
+            DiagnosticLog.write("setup: opened Accessibility settings")
+            self?.refreshSetupModel()
+        }
+        m.requestNotifications = { [weak self] in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                DiagnosticLog.write("setup: notification prompt → \(granted ? "granted" : "denied")")
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.refreshSetupModel() } }
+            }
+        }
+        m.retryModel = { [weak self] in
+            guard let self, !self.isWarming, self.phase == .idle else { return }
+            DiagnosticLog.write("setup: model retry requested")
+            self.reloadEngine()
+        }
+        m.done = { [weak self] in self?.setupWindow?.close() }
+        refreshSetupModel()
+        let window = setupWindow ?? makeWindow(title: "Set up Spiel", view: SetupView(model: m),
+                                               size: NSSize(width: 620, height: 640), autosave: "SpielSetup")
+        window.styleMask.remove(.resizable)
+        // The window follows the view's height (an error message is taller than a tick).
+        (window.contentView as? NSHostingView<SetupView>)?.sizingOptions = [.preferredContentSize]
+        setupWindow = window
+        present(window)
+        setupPoll?.invalidate()
+        // Accessibility grants do not notify the app, and the other two can change
+        // in System Settings behind the window — so every second while it is open.
+        setupPoll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshSetupModel() }
+        }
+    }
+
+    fileprivate func refreshSetupModel() {
+        let m = setupModel
+        m.microphone = AudioCapture.microphoneAuthorization()
+        let ax = TextInserter.hasAccessibilityPermission()
+        if ax && !m.accessibility && setupWindow?.isVisible == true {
+            DiagnosticLog.write("setup: accessibility granted")
+            accessibilityPoll?.invalidate()
+            accessibilityPoll = nil
+            updateStatusItem()
+        }
+        m.accessibility = ax
+        m.engine = settings.engine
+        m.mode = settings.dictationMode
+        m.shortcut = hotkeys.combo(.dictation)?.description ?? settings.dictationCombo.description
+        if case .failed(_, let why) = hotkeyStatus { m.shortcutProblem = why } else { m.shortcutProblem = nil }
+        if case .downloading(let f, _, let files) = m.model {
+            m.model = .downloading(fraction: f, bytes: SpeechModels.bytesOnDisk(settings.engine), files: files)
+        }
+        Task { @MainActor in
+            let n = await self.notificationState()
+            if self.setupModel.notifications != n { self.setupModel.notifications = n }
+        }
+    }
+
+    /// FluidAudio's progress for the engine being loaded. Only the CHOSEN engine
+    /// drives the bar; a fallback's own download is reported by the end state.
+    fileprivate func noteModelProgress(_ p: ModelLoadProgress, choice: EngineChoice) {
+        guard choice == settings.engine, isWarming else { return }
+        // Callbacks queued on main can land after warm-up has already set the end
+        // state; a late "compiling" must not turn a ready engine back into a spinner.
+        switch setupModel.model {
+        case .ready, .fallback, .failed: return
+        default: break
+        }
+        if modelWasOnDisk {
+            if case .compiling = p.phase { setupModel.model = .compiling }
+            return
+        }
+        switch p.phase {
+        case .listing:
+            if case .checking = setupModel.model { return }
+            setupModel.model = .checking
+        case .downloading(let done, let total):
+            let f = p.downloadFraction ?? 0
+            // FluidAudio's last download event is 100 %; the load that follows
+            // reports nothing, so that IS the start of compiling.
+            if f >= 1 { setupModel.model = .compiling; return }
+            let pct = Int((f * 100).rounded(.down))
+            guard pct != lastModelPercent else { return }
+            if lastModelPercent < 0 { DiagnosticLog.write("setup: downloading \(choice.engineName)") }
+            lastModelPercent = pct
+            var bytes: Int64 = 0
+            if case .downloading(_, let b, _) = setupModel.model { bytes = b }
+            setupModel.model = .downloading(fraction: f, bytes: bytes,
+                                            files: total > 0 ? "\(done) of \(total) files" : nil)
+        case .compiling:
+            setupModel.model = .compiling
+        }
+    }
+
+    fileprivate func setupClosed() {
+        setupPoll?.invalidate()
+        setupPoll = nil
+        if !settings.setupCompleted {
+            settings.setupCompleted = true
+            DiagnosticLog.write("setup window closed — marked done (still to do: \(setupModel.remaining) step(s)); Setup… in the menu reopens it")
+        }
+        if setupShownAtLaunch {
+            setupShownAtLaunch = false
+            foldPermissionsAfterSetup()
+        }
+    }
+
+    /// The setup window took over the launch-time permission requests. If he closes
+    /// it with some unanswered, ask now — before any dictation, which is the rule —
+    /// rather than on the first hotkey press. Accessibility is not re-prompted: he
+    /// just closed the window that offers it, and the menu keeps a ⚠︎ item for it.
+    fileprivate func foldPermissionsAfterSetup() {
+        if AudioCapture.microphoneAuthorization() == .notDetermined {
+            Task {
+                let granted = await AudioCapture.requestMicrophoneAccess()
+                DiagnosticLog.write("microphone permission prompt after setup → \(granted ? "granted" : "denied")")
+            }
+        }
+        Task { @MainActor in
+            if await self.notificationState() == .notDetermined { Notifier.requestAuthorization() }
+        }
+        if !TextInserter.hasAccessibilityPermission() { startAccessibilityPoll() }
+    }
+
+    // MARK: Command-line tool
+
+    /// Menu → Install Command Line Tool…: `~/.local/bin/spiel` → the helper inside
+    /// this bundle. Never sudo; /usr/local/bin is offered only when it is writable
+    /// and ~/.local/bin is not on the shell's PATH.
+    @objc fileprivate func installCommandLineTool() {
+        let helper = CommandLineInstaller.helper(in: Bundle.main.bundleURL)
+        Task { @MainActor in
+            let path = await Task.detached { CommandLineInstaller.loginShellPATH() }.value
+            let user = CommandLineInstaller.userBin, system = CommandLineInstaller.systemBin
+            let userOnPath = path.map { CommandLineInstaller.isOnPath(user, path: $0) }
+            let systemUsable = FileManager.default.isWritableFile(atPath: system.path)
+                && (path.map { CommandLineInstaller.isOnPath(system, path: $0) } ?? false)
+            let offerSystem = userOnPath == false && systemUsable
+
+            let ask = NSAlert()
+            ask.messageText = "Install the spiel command?"
+            var info = "Creates \(user.path)/spiel, a link to the tool inside this copy of Spiel. No administrator password. If you move Spiel.app later, install again.\n\nThen: spiel transcribe meeting.m4a — see spiel --help."
+            if userOnPath == false {
+                info += "\n\n\(user.path) is not on your shell's PATH\(offerSystem ? " — /usr/local/bin is, and you can write to it" : ""), so after installing there you will need to add it (the next window shows the line)."
+            } else if userOnPath == nil {
+                info += "\n\nSpiel could not read your shell's PATH to check that \(user.path) is on it."
+            }
+            ask.informativeText = info
+            ask.addButton(withTitle: "Install")
+            if offerSystem { ask.addButton(withTitle: "Install in /usr/local/bin") }
+            ask.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            let r = ask.runModal()
+            let target: URL
+            switch r {
+            case .alertFirstButtonReturn: target = user
+            case .alertSecondButtonReturn where offerSystem: target = system
+            default: return
+            }
+            let result = NSAlert()
+            do {
+                let outcome = try CommandLineInstaller.install(helper: helper, into: target)
+                let link: String
+                switch outcome {
+                case .installed(let p): link = p; result.messageText = "Installed spiel"
+                case .alreadyInstalled(let p): link = p; result.messageText = "spiel is already installed"
+                case .replaced(let p, let prev): link = p; result.messageText = "Updated spiel"
+                    DiagnosticLog.write("cli: replaced link to \(prev)")
+                }
+                DiagnosticLog.write("cli: \(link) → \(helper.path)")
+                var text = "\(link) → \(helper.path)\n\nTry: spiel --help"
+                let onPath = target == system || userOnPath == true
+                if !onPath {
+                    text += "\n\n\(target.path) is not on your PATH\(userOnPath == nil ? " (could not check)" : ""). Add this line to ~/.zshrc, then open a new terminal:\n\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                    result.addButton(withTitle: "Copy Line")
+                    result.addButton(withTitle: "OK")
+                }
+                result.informativeText = text
+                if result.runModal() == .alertFirstButtonReturn, !onPath {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("export PATH=\"$HOME/.local/bin:$PATH\"", forType: .string)
+                }
+            } catch {
+                DiagnosticLog.write("cli: install FAILED: \(error)")
+                result.alertStyle = .warning
+                result.messageText = "Could not install spiel"
+                result.informativeText = "\(error)"
+                result.runModal()
+            }
+        }
     }
 }
 

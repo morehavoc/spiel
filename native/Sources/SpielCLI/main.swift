@@ -236,7 +236,7 @@ case "live":
                 case .speechStarted: print("  [speech]")
                 case .segmentCaptured(let i, let s):
                     print("  [segment \(i): \(String(format: "%.2f", s))s]")
-                case .textReleased(let t, let at, let gap):
+                case .textReleased(let t, let at, let gap, _):
                     print("  > [\(String(format: "%.2f", at))s, gap \(String(format: "%.2f", gap))s] \(t)")
                 case .error(let e, _, _): print("  ! \(e)")
                 }
@@ -302,7 +302,7 @@ case "replay":
                 case .speechStarted: break
                 case .segmentCaptured(let i, let s):
                     print("  [segment \(i): \(String(format: "%.2f", s))s]")
-                case .textReleased(let t, let at, let gap):
+                case .textReleased(let t, let at, let gap, _):
                     print("  > [\(String(format: "%.2f", at))s, gap \(String(format: "%.2f", gap))s] \(t)")
                 case .error(let e, _, _): print("  ! \(e)")
                 }

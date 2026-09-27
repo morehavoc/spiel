@@ -18,14 +18,18 @@ public actor ParakeetTranscriber: Transcriber {
     private var manager: AsrManager?
     private var decoderState: TdtDecoderState?
 
-    public init(version: AsrModelVersion = .v3) {
+    private let progress: ModelProgressHandler?
+
+    public init(version: AsrModelVersion = .v3, progress: ModelProgressHandler? = nil) {
         self.version = version
+        self.progress = progress
     }
 
     public func prepare() async throws {
         if manager != nil { return }
         do {
-            let models = try await AsrModels.downloadAndLoad(version: version)
+            let models = try await AsrModels.downloadAndLoad(
+                version: version, progressHandler: ModelLoadProgress.handler(progress))
             let mgr = AsrManager(config: .default)
             try await mgr.loadModels(models)
             self.manager = mgr

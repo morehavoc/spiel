@@ -14,15 +14,29 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/Spiel.app"
 
 cd "$ROOT"
+# One source of truth for the version: Sources/SpielCore/Version.swift, which
+# `spiel --version` also prints.
+VERSION="$(sed -n 's/.*static let short = "\(.*\)".*/\1/p' Sources/SpielCore/Version.swift)"
+BUILD="$(sed -n 's/.*static let build = "\(.*\)".*/\1/p' Sources/SpielCore/Version.swift)"
+[ -n "$VERSION" ] && [ -n "$BUILD" ] || { echo "could not read the version from Sources/SpielCore/Version.swift"; exit 1; }
+
 echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG" --product Spiel
+swift build -c "$CONFIG" --product spiel-tool
 
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/Spiel"
+BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+BIN="$BIN_DIR/Spiel"
+TOOL="$BIN_DIR/spiel-tool"
 [ -f "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
+[ -f "$TOOL" ] || { echo "no binary at $TOOL"; exit 1; }
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN" "$APP/Contents/MacOS/Spiel"
+# The `spiel` command (menu → Install Command Line Tool… links ~/.local/bin/spiel
+# here). Contents/Helpers, NOT Contents/MacOS: APFS is case-insensitive, so
+# Contents/MacOS/spiel would be the app's own Contents/MacOS/Spiel.
+cp "$TOOL" "$APP/Contents/Helpers/spiel"
 # App icon (Finder, /Applications, Login Items, notifications — it is a menu-bar app,
 # so there is no Dock tile). Regenerate with scripts/make-icon.py + iconutil.
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -38,8 +52,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>Spiel</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleShortVersionString</key><string>2.4.0</string>
-    <key>CFBundleVersion</key><string>4</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key>
@@ -74,13 +88,15 @@ if [ -f "$SIGN_KEYCHAIN" ] && security find-certificate -c "$SIGN_ID" "$SIGN_KEY
   else
     echo "NOTE: SPIEL_SIGN_KEYCHAIN_PASSWORD unset — assuming '$SIGN_KEYCHAIN' is already unlocked." >&2
   fi
+  # The helper first, then the app (nested code must be signed before its container).
+  codesign --force --sign "$SIGN_ID" --keychain "$SIGN_KEYCHAIN" "$APP/Contents/Helpers/spiel"
   codesign --force --deep --sign "$SIGN_ID" --keychain "$SIGN_KEYCHAIN" "$APP"
   echo "==> signed with '$SIGN_ID' (stable TCC identity)"
 else
   echo "WARNING: '$SIGN_ID' not found — signing AD-HOC. Accessibility grants will NOT survive rebuilds." >&2
-  codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
+  codesign --force --sign - "$APP/Contents/Helpers/spiel" && codesign --force --deep --sign - "$APP" || echo "(codesign skipped)"
 fi
 codesign -d -r- "$APP" 2>&1 | grep designated
 
-echo "==> built $APP"
+echo "==> built $APP ($VERSION build $BUILD; command-line tool at Contents/Helpers/spiel)"
 echo "    open it with:  open '$APP'"

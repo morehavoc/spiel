@@ -20,6 +20,62 @@ Everything in that panel ran on the laptop — Parakeet on the Neural Engine, no
 network, no API key. (Yes, it heard "Claude Code" as "clawed code". Local models
 have opinions.)
 
+## First-run setup and the `spiel` command (2.5.0)
+
+**Setup window.** A fresh install opens *Set up Spiel*: Microphone, Accessibility (so
+Spiel can type into other apps; the step ticks itself within a second of the switch
+going on), Notifications, the speech model (name, size, a real download bar from
+FluidAudio's own byte count, then "Loading onto the Neural Engine"; on failure the
+error and a Retry), and a "Try it" line with the current shortcut. It replaces the
+launch-time permission prompts rather than adding to them; close it early and
+whatever is still unanswered is asked then, before any dictation. An upgrade that
+already has mic + Accessibility + an answered notification prompt + the model on disk
+never sees it. Reopen any time: menu → **Setup…**.
+
+**`spiel` command.** Menu → **Install Command Line Tool…** links
+`~/.local/bin/spiel` to `Spiel.app/Contents/Helpers/spiel` (no sudo; `/usr/local/bin`
+is offered only if it is writable and `~/.local/bin` is not on your PATH; an existing
+file that is not a Spiel link is never overwritten). It uses the app's model cache,
+vocabulary and settings.
+
+```bash
+spiel transcribe meeting.m4a                  # text to stdout
+spiel transcribe talk.mp4 -f srt -o talk.srt  # also md, vtt, json
+cat clip.wav | spiel transcribe - -f json     # stdin
+spiel transcribe *.m4a -f vtt -o subs/        # several files → a folder
+spiel transcripts                              # Listen transcripts, newest first
+spiel transcripts show 1                       # print one
+spiel history -n 5                             # recent dictations (read-only)
+spiel doctor                                   # models, versions, paths
+```
+
+Files of any length go through the same VAD + 14 s segmenter as dictation (a 3-minute
+file: 18 segments, 4.4 s on an M4). `--engine unified|v3|apple` (default: Settings, with
+the app's fallback), `--vocab builtin|none|<file>` (default: your vocabulary over the
+built-ins), `-q` quiet.
+
+### For AI agents
+
+- Run `spiel transcribe <file> -f json -q`. **stdout carries only the result**;
+  progress and diagnostics go to stderr (errors still print with `-q`).
+- JSON (one file → object, several → array of these), keys in this order:
+  `{"file": str, "duration_s": num, "engine": str, "words": int,
+  "segments": [{"start": num, "end": num, "text": str}], "text": str, "errors": [str]}`.
+  Times are seconds from the start of the file (ms precision), monotonic. `text` is
+  the segments joined, with `\n\n` at pauses ≥ 2 s. `errors` lists segments the engine
+  failed on (non-empty = partial transcript).
+- Exit codes: **0** ok · **1** usage · **2** file unreadable / missing / not audio ·
+  **3** engine or model failure (also when some segments failed; output holds what did
+  transcribe) · **4** no speech found (a valid, silent file — not a failure; json still
+  prints, with empty `segments`). Several files: all attempted, exit = most severe of
+  3 > 2 > 4.
+- Inputs: anything AVFoundation reads (wav aiff caf m4a mp3 aac mp4 mov), or `-` for
+  stdin. The first run of an engine downloads its model (~615 MB unified) to
+  `~/Library/Application Support/FluidAudio/Models`, progress on stderr.
+- `spiel transcripts list --json` → `[{number, name, path, title, started,
+  duration_s, words}]`; `spiel transcripts show <n|name>` prints the markdown;
+  `spiel history --json` → `[{date, app, words, text}]`, newest first.
+
 ## Settings, History, Diagnostics (2.4.0)
 
 **Settings…** (menu, ⌘, while the menu is open) has two tabs:
@@ -137,16 +193,25 @@ native/
 │   │   ├── WindowTitle.swift          # frontmost window title via AX (default Listen title)
 │   │   ├── Glossary.swift             # custom-vocabulary post-pass
 │   │   ├── TextInserter.swift         # AX + CGEvent insertion
-│   │   └── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log (off by default; menu → Diagnostic Logging)
-│   ├── SpielCLI/           # headless harness (spiel-cli)
-│   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live
-│   │   └── SelfTest.swift             # the only test harness (no XCTest here)
+│   │   ├── DiagnosticLog.swift        # ~/Library/Logs/Spiel.log (off by default; menu → Diagnostic Logging)
+│   │   ├── FileTranscription.swift    # file reader (AVAssetReader), file → session, text/md/srt/vtt/json
+│   │   ├── ToolArguments.swift        # `spiel` argument parsing + exit codes
+│   │   ├── ModelSetup.swift           # model download progress, models on disk, setup checklist
+│   │   ├── ListenTranscripts.swift    # `spiel transcripts` listing
+│   │   ├── CommandLineInstaller.swift # ~/.local/bin/spiel symlink
+│   │   └── Version.swift              # the version (bundle.sh + spiel --version read it)
+│   ├── SpielTool/main.swift  # the user-facing `spiel` command (product spiel-tool)
+│   ├── SpielCLI/           # developer harness (spiel-cli)
+│   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live/replay/boost-eval
+│   │   ├── SelfTest.swift             # the only test harness (no XCTest here)
+│   │   └── SelfTest25.swift           # 2.5: spiel contract, formats, file pipeline, setup, installer
 │   └── SpielApp/           # menu-bar app
 │       ├── main.swift                 # AppDelegate, menu, dictation + Listen lifecycle
 │       ├── RecordingPanel.swift       # floating level-meter panel (dictation)
 │       ├── ListenPanel.swift          # the Listen sidebar
 │       ├── SettingsWindow.swift       # SwiftUI Settings + the AppKit shortcut recorder field
 │       ├── HistoryWindow.swift        # SwiftUI History list
+│       ├── SetupWindow.swift          # first-run setup window
 │       └── Notifier.swift             # user-facing notifications
 └── scripts/bundle.sh       # → build/Spiel.app
 ```
@@ -159,9 +224,13 @@ merged over the built-in `Glossary` terms.
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 346/346 expected
-./scripts/bundle.sh release           # → build/Spiel.app
+.build/release/spiel-cli selftest     # 455/455 expected
+./scripts/bundle.sh release           # → build/Spiel.app (+ Contents/Helpers/spiel)
 ```
+
+The `spiel` command builds as `.build/release/spiel-tool`: SwiftPM puts every
+executable in one folder, and on case-insensitive APFS a product named `spiel` would be
+the app's `Spiel`.
 
 Two things bite on a fresh machine:
 
@@ -214,7 +283,9 @@ swift build -c release          # library + CLI + app
 
 Command Line Tools are sufficient; no Xcode.app required.
 
-## CLI
+## Developer harness (spiel-cli)
+
+For users and scripts, use `spiel` (above). `spiel-cli` is the test/benchmark harness:
 
 ```bash
 spiel-cli doctor                        # environment + permission report

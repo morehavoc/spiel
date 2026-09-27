@@ -130,7 +130,7 @@ enum SelfTest {
             await session.setEventHandler { ev in
                 box.lock.lock(); defer { box.lock.unlock() }
                 switch ev {
-                case .textReleased(let t, let at, let gap): box.rel.append(Rel(text: t, at: at, gap: gap))
+                case .textReleased(let t, let at, let gap, _): box.rel.append(Rel(text: t, at: at, gap: gap))
                 case .error(_, let at, let secs): box.errs.append((at, secs))
                 default: break
                 }
@@ -1417,6 +1417,7 @@ enum SelfTest {
         appSourceRules24()
         listenSourceRules()
         boostSourceRules()
+        await tests25()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {
