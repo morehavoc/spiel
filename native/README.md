@@ -5,7 +5,8 @@ app on the `v2-native` branch. Nothing in `electron/` or `src/` was touched.
 
 ## What it looks like
 
-Hold the hotkey, talk, let go. The text lands in whatever had focus.
+Press ⌘⇧D, talk, press it again. The text lands in whatever had focus. (Prefer
+hold-to-talk? Settings → Dictation shortcut.)
 
 ![Spiel v2 listening panel — hold the hotkey, the menu bar mic goes orange, the panel shows the live waveform and the transcript as each segment lands](docs/media/spiel-v2-demo.gif)
 
@@ -18,6 +19,44 @@ Three moments from that clip:
 Everything in that panel ran on the laptop — Parakeet on the Neural Engine, no
 network, no API key. (Yes, it heard "Claude Code" as "clawed code". Local models
 have opinions.)
+
+## Settings, History, Diagnostics (2.4.0)
+
+**Settings…** (menu, ⌘, while the menu is open) has two tabs:
+
+- **General** — rebind the Dictation and Listen shortcuts (click the field, press the
+  combo; ⎋ cancels). A shortcut needs ⌘, ⌥ or ⌃ unless it is an F-key; bare-⌘
+  standards (⌘Q, ⌘C, ⌘V…) and the other hotkey's combo are refused with the reason
+  under the field; a combo Carbon will not register is refused with its reason and
+  the previous one stays. Global hotkeys are released while a field is recording, so
+  ⌘⇧D reaches the field instead of starting a dictation. "Try F5 instead" in the menu
+  now saves F5 as the shortcut. Dictation mode: press-to-toggle (the default, and what
+  every earlier build did) or hold-to-talk. Microphone: system default or a named
+  input; a picked device that is unplugged falls back to the default and the menu
+  says so (`⚠︎ Mic: Yeti is not connected — using the system default input`). Engine:
+  Unified (default) / v3 / Apple, switched live (deferred to the end of a running
+  session), falling back through the others as before. History on/off, Open at Login,
+  Diagnostic Logging.
+- **Vocabulary** — edits `vocabulary.txt` in place (Save ⌘S, Revert, Show in Finder).
+  Menu → Edit Vocabulary… opens this tab.
+
+**History…** keeps the last 50 dictations that produced text — inserted or not, since
+a failed insert is exactly when you want it back — with time, target app and word
+count, in `~/Library/Application Support/Spiel/history.json` (0600, atomic write).
+Search box, double-click or Copy to put one on the clipboard, Clear History… with a
+confirmation. **Copy Last Dictation** in the menu works with history off too (memory
+only). Not kept: Listen transcripts (they have their own files) and any dictation
+taken while Secure Input was on (it may be a password).
+
+**Help → Send Diagnostics…** saves a zip (save panel, Desktop by default) and reveals
+it: app/macOS/chip/RAM, permission states, hotkey registration, mode, chosen and
+active engine, models on disk, chosen and resolved microphone, last dictation
+outcome, Secure Input holder, and the last 2,000 lines of `Spiel.log` if logging was
+on. **No transcript text, history or vocabulary terms**: log lines that quote
+dictated text are tagged `[dictated-text]` since 2.4 and withheld whole; every quoted
+span on other lines (boost terms, window titles, pre-2.4 transcript lines) and every
+transcript file name is blanked. `selftest` plants secrets and asserts none reach the
+zip's folder.
 
 ## Listen — whole-meeting transcription (2.1.0)
 
@@ -84,14 +123,17 @@ native/
 │   │   ├── Transcriber.swift          # protocol, TranscriptSegment, errors
 │   │   ├── ParakeetTranscriber.swift  # FluidAudio / Parakeet TDT on the ANE
 │   │   ├── AppleSpeechTranscriber.swift # macOS 26 SpeechAnalyzer
-│   │   ├── AudioCapture.swift         # AVAudioEngine → 16 kHz mono float
+│   │   ├── AudioCapture.swift         # AVAudioEngine → 16 kHz mono float; CoreAudio input list + device pick
 │   │   ├── AudioSink.swift            # order-preserving, re-armable audio handoff
 │   │   ├── VoiceActivityDetector.swift # energy-based speech gate
 │   │   ├── DictationSession.swift     # VAD → segment → transcribe → assemble (+ timing on events)
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
 │   │   ├── TranscriptDocument.swift   # Listen transcript: paragraphs, markers, frontmatter (pure)
 │   │   ├── TranscriptStore.swift      # ~/Documents/Spiel/Transcripts, atomic saves
-│   │   ├── HotkeyManager.swift        # Carbon global hotkeys (⌘⇧D dictation, ⌘⇧L listen), failure surfaced
+│   │   ├── HotkeyManager.swift        # Carbon global hotkeys (press + release), suspend for the recorder, failure surfaced
+│   │   ├── Settings.swift             # SpielSettings (defaults), key names, shortcut rules, engine choice
+│   │   ├── DictationHistory.swift     # last 50 dictations, search, 0600 atomic JSON
+│   │   ├── DiagnosticsBundle.swift    # Send Diagnostics: report + redacted log tail, ditto zip
 │   │   ├── WindowTitle.swift          # frontmost window title via AX (default Listen title)
 │   │   ├── Glossary.swift             # custom-vocabulary post-pass
 │   │   ├── TextInserter.swift         # AX + CGEvent insertion
@@ -103,19 +145,21 @@ native/
 │       ├── main.swift                 # AppDelegate, menu, dictation + Listen lifecycle
 │       ├── RecordingPanel.swift       # floating level-meter panel (dictation)
 │       ├── ListenPanel.swift          # the Listen sidebar
+│       ├── SettingsWindow.swift       # SwiftUI Settings + the AppKit shortcut recorder field
+│       ├── HistoryWindow.swift        # SwiftUI History list
 │       └── Notifier.swift             # user-facing notifications
 └── scripts/bundle.sh       # → build/Spiel.app
 ```
 
 The user-editable vocabulary file lives outside the repo, at
-`~/Library/Application Support/Spiel/vocabulary.txt` (menu → Edit Vocabulary…). It is
+`~/Library/Application Support/Spiel/vocabulary.txt` (Settings → Vocabulary). It is
 merged over the built-in `Glossary` terms.
 
 ## Building
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 81/81 expected
+.build/release/spiel-cli selftest     # 346/346 expected
 ./scripts/bundle.sh release           # → build/Spiel.app
 ```
 
@@ -132,7 +176,10 @@ Two things bite on a fresh machine:
   locked. Without the identity the script signs ad-hoc and says so loudly — grants
   then break on every rebuild.
 
-There is no XCTest target; `spiel-cli selftest` is the whole harness.
+There is no XCTest target; `spiel-cli selftest` is the whole harness. SwiftUI builds
+under the Command Line Tools, but **its macros do not**: CLT ships no
+`SwiftUIMacros` plugin, so `@State` (a macro now) fails to compile — keep view state
+in an `ObservableObject` with `@Published` instead.
 
 ## Engine choice
 

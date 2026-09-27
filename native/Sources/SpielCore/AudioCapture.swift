@@ -1,4 +1,6 @@
 import AVFoundation
+import CoreAudio
+import AudioToolbox
 import Foundation
 
 /// Microphone capture, converted to the 16 kHz mono float format every engine wants.
@@ -20,7 +22,90 @@ public final class AudioCapture: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private(set) public var isRunning = false
 
+    /// The input the user picked in Settings (a CoreAudio device UID), or nil for
+    /// the system default. Read at every arm, so it applies from the next start and
+    /// on a route-change restart. Set it only while capture is stopped.
+    public var preferredDeviceUID: String?
+    /// The device capture is actually on, as last armed.
+    private(set) public var activeDeviceName: String?
+    /// Set when the preferred device was not present at the last arm and capture
+    /// fell back to the system default; nil otherwise.
+    private(set) public var fallbackNote: String?
+    /// True once the input unit has been pointed at a picked device; from then on
+    /// it is pointed explicitly (back at the default when the pick is cleared).
+    private var pinnedDevice = false
+
     public init() {}
+
+    // MARK: - Input devices (CoreAudio)
+
+    public struct InputDevice: Equatable, Sendable {
+        public let id: AudioDeviceID
+        public let uid: String
+        public let name: String
+        public init(id: AudioDeviceID, uid: String, name: String) { self.id = id; self.uid = uid; self.name = name }
+    }
+
+    /// Every device with at least one input stream, as CoreAudio lists them.
+    public static func inputDevices() -> [InputDevice] {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.compactMap { id in
+            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+                                                     mScope: kAudioDevicePropertyScopeInput,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var ssize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &ssize) == noErr, ssize > 0 else { return nil }
+            guard let uid = stringProperty(id, kAudioDevicePropertyDeviceUID),
+                  let name = stringProperty(id, kAudioObjectPropertyName) else { return nil }
+            return InputDevice(id: id, uid: uid, name: name)
+        }
+    }
+
+    private static func stringProperty(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var addr = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr, let value else { return nil }
+        return value.takeRetainedValue() as String
+    }
+
+    static func systemDefaultInputID() -> AudioDeviceID? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &id) == noErr,
+              id != 0 else { return nil }
+        return id
+    }
+
+    /// Which device a start should use. Pure, so selftest pins the fallback: a
+    /// picked device that is not plugged in means the system default AND a note
+    /// saying so — never a silent switch, never a refusal to record.
+    public enum Resolution: Equatable, Sendable {
+        case systemDefault
+        case device(InputDevice)
+        case missing(uid: String, name: String)
+
+        public var note: String? {
+            if case .missing(_, let name) = self { return "\(name) is not connected — using the system default input" }
+            return nil
+        }
+    }
+
+    public static func resolve(preferredUID: String?, preferredName: String? = nil, devices: [InputDevice]) -> Resolution {
+        guard let uid = preferredUID, !uid.isEmpty else { return .systemDefault }
+        if let d = devices.first(where: { $0.uid == uid }) { return .device(d) }
+        return .missing(uid: uid, name: preferredName ?? uid)
+    }
 
     // MARK: - Microphone permission and device identity
     //
@@ -118,12 +203,14 @@ public final class AudioCapture: @unchecked Sendable {
     /// 48 kHz to a built-in at 44.1 kHz changes it), re-install and restart.
     private func restartAfterRouteChange() {
         guard isRunning else { return }
-        let device = Self.defaultInputDeviceName()
+        var device = Self.defaultInputDeviceName()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         engine.reset()
         do {
             try arm()
+            device = activeDeviceName ?? device
+            if let note = fallbackNote { device += " (\(note))" }
             restarts += 1
             DiagnosticLog.write("audio engine configuration changed mid-capture — restarted capture on \(device)")
             onRouteChange?(device)
@@ -139,6 +226,7 @@ public final class AudioCapture: @unchecked Sendable {
     /// input format, build the converter, install the tap, start the engine.
     private func arm() throws {
         let input = engine.inputNode
+        applyPreferredDevice(to: input)
         let inputFormat = input.outputFormat(forBus: 0)
         // With NO input device (headless Mac, or every input disconnected) the node
         // reports 0 Hz / 0 channels, and `installTap` then raises an ObjC exception —
@@ -177,6 +265,36 @@ public final class AudioCapture: @unchecked Sendable {
         } catch {
             input.removeTap(onBus: 0)
             throw CaptureError.engineFailed(error.localizedDescription)
+        }
+    }
+
+    /// Points the input node at the picked device, or back at the system default.
+    /// Only sets the property when it differs from the node's current device: an
+    /// unconditional set on every route-change restart could itself raise another
+    /// configuration change and loop. And never at all until a device has been
+    /// picked: with no pick the engine follows the system default on its own, which
+    /// is the 2.3 behaviour the route-change recovery was built and tested against.
+    private func applyPreferredDevice(to input: AVAudioInputNode) {
+        let resolution = Self.resolve(preferredUID: preferredDeviceUID, devices: Self.inputDevices())
+        fallbackNote = resolution.note
+        if let note = resolution.note { DiagnosticLog.write("microphone: \(note)") }
+        let targetID: AudioDeviceID?
+        switch resolution {
+        case .device(let d): targetID = d.id; activeDeviceName = d.name
+        case .systemDefault, .missing:
+            targetID = Self.systemDefaultInputID(); activeDeviceName = Self.defaultInputDeviceName()
+        }
+        if case .device = resolution { pinnedDevice = true }
+        guard pinnedDevice, var want = targetID, let unit = input.audioUnit else { return }
+        var current = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let got = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &current, &size)
+        guard got != noErr || current != want else { return }
+        let err = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                       &want, UInt32(MemoryLayout<AudioDeviceID>.size))
+        if err != noErr {
+            DiagnosticLog.write("microphone: could not switch input to \(activeDeviceName ?? "?") (OSStatus \(err)) — capture continues on the node's current device")
+            activeDeviceName = Self.defaultInputDeviceName()
         }
     }
 

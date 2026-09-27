@@ -83,6 +83,10 @@ public enum DiagnosticLog {
         return f
     }()
 
+    /// Prefix on every `sensitive: true` line, so Send Diagnostics can withhold
+    /// the line structurally instead of guessing which part is dictated text.
+    public static let sensitiveTag = "[dictated-text] "
+
     /// Rotate once to `Spiel.log.1` past this size. The log records every
     /// transcript verbatim (that is what makes it useful when "nothing happened"),
     /// so without a cap it is an unbounded plaintext record of everything dictated.
@@ -105,7 +109,7 @@ public enum DiagnosticLog {
     /// written) and the first line after they turn it on is never lost.
     public static func write(_ line: String, sensitive: Bool = false) {
         guard isEnabled else { return }
-        let text = "[\(stamp.string(from: Date()))] \(line)\n"
+        let text = "[\(stamp.string(from: Date()))] \(sensitive ? sensitiveTag : "")\(line)\n"
         queue.async {
             guard let data = text.data(using: .utf8) else { return }
             let fm = FileManager.default

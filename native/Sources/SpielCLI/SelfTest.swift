@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Foundation
 import SpielCore
 
@@ -270,10 +271,13 @@ enum SelfTest {
         var registered: [UInt32: HotkeyManager.Combo] = [:]
         var failIds: Set<UInt32> = []
         var handlerInstalls = 0
-        var route: ((UInt32) -> Void)?
+        var fullRoute: ((UInt32, Bool) -> Void)?
+        /// Key-down only, as the original tests drive it.
+        var route: ((UInt32) -> Void)? { fullRoute.map { r in { r($0, false) } } }
+        func release(_ id: UInt32) { fullRoute?(id, true) }
         final class Tok { let id: UInt32; init(_ i: UInt32) { id = i } }
-        func installHandler(_ route: @escaping (UInt32) -> Void) -> Result<Void, HotkeyManager.RegisterError> {
-            handlerInstalls += 1; self.route = route; return .success(())
+        func installHandler(_ route: @escaping (UInt32, Bool) -> Void) -> Result<Void, HotkeyManager.RegisterError> {
+            handlerInstalls += 1; self.fullRoute = route; return .success(())
         }
         func register(_ combo: HotkeyManager.Combo, id: UInt32) -> Result<AnyObject, HotkeyManager.RegisterError> {
             if failIds.contains(id) { return .failure(.taken) }
@@ -281,7 +285,7 @@ enum SelfTest {
             return .success(Tok(id))
         }
         func unregister(_ token: AnyObject) { if let t = token as? Tok { registered[t.id] = nil } }
-        func removeHandler() { route = nil }
+        func removeHandler() { fullRoute = nil }
     }
 
     static func hotkeyRoutingTests() {
@@ -340,6 +344,278 @@ enum SelfTest {
         expect(backend.route == nil ? "removed" : "kept", "removed", "unregisterAll removes the event handler")
         expect(HotkeyManager.Id.listen.rawValue == 2 && HotkeyManager.Id.dictation.rawValue == 1 ? "ok" : "no", "ok",
                "ids are the EventHotKeyID values the Carbon callback reads back (1 dictation, 2 listen)")
+    }
+
+    /// 2.4.0 — hold-to-talk release routing, recorder suspension, shortcut rules.
+    static func hotkeySettingsTests() {
+        print("\nHotkeys 2.4 — release routing, suspend while recording a shortcut, validation")
+        let backend = StubHotkeyBackend()
+        let mgr = HotkeyManager(backend: backend)
+        var fired: [String] = []
+        mgr.register(.dictation, .defaultCombo, onTrigger: { fired.append("down") }, onRelease: { fired.append("up") })
+        mgr.register(.listen, .listen) { fired.append("listen") }
+        backend.route?(1); backend.release(1)
+        expect(fired.joined(separator: ","), "down,up", "key-down then key-up route to trigger then release (hold-to-talk)")
+        fired.removeAll()
+        backend.release(2)
+        expect(fired.joined(separator: ","), "", "a release on an id with no release handler fires nothing (Listen stays toggle)")
+
+        mgr.setSuspended(true)
+        expectInt(backend.registered.count, 0, "suspending releases every Carbon registration (⌘⇧D can reach the recorder field)")
+        expect(mgr.status(.dictation).isHealthy && mgr.status(.listen).isHealthy ? "ok" : "no", "ok",
+               "…without reporting the hotkeys as dead (no warning icon while recording)")
+        backend.route?(1)
+        expect(fired.joined(separator: ","), "", "a suspended hotkey fires nothing")
+        mgr.register(.dictation, HotkeyManager.Combo(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | optionKey)),
+                     onTrigger: { fired.append("new") })
+        expectInt(backend.registered.count, 0, "a combo set while suspended is not registered yet")
+        backend.failIds = [2]
+        mgr.setSuspended(false)
+        expect(backend.registered[1]?.description ?? "nil", "⌥⌘K", "resume registers the combo chosen while suspended")
+        expect(mgr.status(.listen).isHealthy ? "healthy" : "failed", "failed",
+               "a combo another app took during the suspension reports failure on resume")
+        backend.route?(1)
+        expect(fired.joined(separator: ","), "new", "after resume the new combo fires its handler")
+        backend.failIds = []
+        mgr.unregisterAll()
+
+        typealias C = HotkeyManager.Combo
+        let cmdShift = UInt32(cmdKey | shiftKey)
+        expect(C(keyCode: UInt32(kVK_ANSI_D), modifiers: cmdShift).description, "⌘⇧D",
+               "a recorded ⌘⇧D is labelled exactly like the built-in default")
+        expect(C(keyCode: UInt32(kVK_ANSI_D), modifiers: cmdShift) == .defaultCombo ? "same" : "differs", "same",
+               "…and is equal to it")
+        expect(KeyNames.describe(keyCode: UInt32(kVK_Space), modifiers: UInt32(controlKey | optionKey)), "⌃⌥Space",
+               "control/option/space label")
+        func v(_ key: Int, _ mods: Int, other: C? = nil) -> String {
+            HotkeyRules.validate(C(keyCode: UInt32(key), modifiers: UInt32(mods)), otherCombo: other, otherName: "Listen") ?? "ok"
+        }
+        expect(v(kVK_ANSI_D, 0).contains("needs a modifier") ? "refused" : v(kVK_ANSI_D, 0), "refused",
+               "a bare letter is refused (it would fire while typing)")
+        expect(v(kVK_ANSI_D, shiftKey).contains("while typing") ? "refused" : v(kVK_ANSI_D, shiftKey), "refused",
+               "⇧ alone is not a modifier for this purpose (⇧D is a capital D)")
+        expect(v(kVK_F5, 0), "ok", "an F-key alone is allowed (the F5 fallback)")
+        expect(v(kVK_F13, shiftKey), "ok", "⇧F13 is allowed")
+        expect(v(kVK_ANSI_Q, cmdKey).contains("standard shortcut") ? "refused" : "ok", "refused",
+               "⌘Q is refused — a global ⌘Q would stop Quit working in every app")
+        expect(v(kVK_ANSI_Q, cmdKey | shiftKey), "ok", "⌘⇧Q is allowed (only the bare-⌘ standard keys are reserved)")
+        expect(v(kVK_ANSI_L, cmdKey | shiftKey, other: .listen).contains("already the Listen shortcut") ? "refused" : "ok",
+               "refused", "a combo equal to the other hotkey is refused")
+        expect(v(kVK_ANSI_K, cmdKey | shiftKey, other: .listen), "ok", "a distinct ⌘⇧K is accepted")
+
+        // Settings round-trip in a throwaway suite, never the real domain.
+        let suite = "com.morehavoc.spiel.selftest-\(ProcessInfo.processInfo.processIdentifier)"
+        let d = UserDefaults(suiteName: suite)!
+        defer { d.removePersistentDomain(forName: suite) }
+        let st = SpielSettings(defaults: d)
+        expect(st.dictationCombo.description + " " + st.listenCombo.description, "⌘⇧D ⌘⇧L", "defaults are ⌘⇧D / ⌘⇧L")
+        expect(st.dictationMode.rawValue, "toggle", "default dictation mode is press-to-toggle (what every earlier build did)")
+        expect(st.engine.rawValue, "unified", "default engine is Parakeet Unified")
+        expect(st.historyEnabled ? "on" : "off", "on", "history defaults ON")
+        expect(st.microphone == nil ? "default" : "set", "default", "microphone defaults to the system default")
+        st.dictationCombo = C(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | optionKey))
+        st.dictationMode = .hold
+        st.engine = .apple
+        st.microphone = (uid: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone")
+        st.historyEnabled = false
+        let st2 = SpielSettings(defaults: d)
+        expect(st2.dictationCombo.description, "⌥⌘K", "a rebound dictation hotkey persists (label re-derived)")
+        expect(st2.dictationMode.rawValue + " " + st2.engine.rawValue, "hold apple", "mode and engine persist")
+        expect(st2.microphone?.name ?? "nil", "MacBook Pro Microphone", "the picked microphone persists with its name")
+        expect(st2.historyEnabled ? "on" : "off", "off", "history off persists")
+        d.set([kVK_ANSI_D, 0], forKey: SpielSettings.dictationHotkeyKey)
+        expect(st2.dictationCombo.description, "⌘⇧D", "a stored combo that breaks the rules reads as the default, not registered")
+        d.set([kVK_ANSI_D, cmdKey | shiftKey], forKey: SpielSettings.listenHotkeyKey)
+        expect(st2.listenCombo.description, "⌘⇧L", "a stored Listen combo equal to dictation reads as the Listen default")
+        st2.dictationCombo = .defaultCombo
+        expect(d.object(forKey: SpielSettings.dictationHotkeyKey) == nil ? "removed" : "kept", "removed",
+               "Reset to default removes the key (a later default change reaches him)")
+        expect(EngineChoice.fallbackOrder(.apple).map(\.rawValue).joined(separator: ","), "apple,unified,v3",
+               "a chosen engine is tried first, then the default order")
+        expect(EngineChoice.fallbackOrder(.unified).map(\.rawValue).joined(separator: ","), "unified,v3,apple",
+               "the default order is unchanged from 2.3 (unified → v3 → Apple)")
+
+        print("\nMicrophone picker — resolution and fallback")
+        let yeti = AudioCapture.InputDevice(id: 42, uid: "yeti-uid", name: "Yeti")
+        expect(AudioCapture.resolve(preferredUID: nil, devices: [yeti]) == .systemDefault ? "default" : "other", "default",
+               "no pick = system default")
+        expect(AudioCapture.resolve(preferredUID: "yeti-uid", devices: [yeti]) == .device(yeti) ? "yeti" : "other", "yeti",
+               "a connected pick is used")
+        let missing = AudioCapture.resolve(preferredUID: "yeti-uid", preferredName: "Yeti", devices: [])
+        expect(missing.note ?? "no note", "Yeti is not connected — using the system default input",
+               "an unplugged pick falls back to the default AND says so by name")
+        expect(AudioCapture.resolve(preferredUID: "yeti-uid", devices: [yeti]).note == nil ? "quiet" : "noted", "quiet",
+               "a connected pick carries no fallback note")
+    }
+
+    /// 2.4.0 — dictation history: cap, order, search, file mode, corrupt file.
+    static func historyTests() {
+        print("\nDictation history — last 50, newest first, 0600, atomic")
+        var h = DictationHistory()
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        for i in 1...55 { h.add(text: "entry number \(i)", app: i % 2 == 0 ? "Slack" : "Mail", date: t0.addingTimeInterval(Double(i))) }
+        expectInt(h.entries.count, 50, "capped at 50")
+        expect(h.entries.first?.text ?? "nil", "entry number 6", "the oldest five were dropped, not the newest")
+        expect(h.last?.text ?? "nil", "entry number 55", "last = the most recent dictation (Copy Last Dictation)")
+        expect(h.newestFirst.first?.text ?? "nil", "entry number 55", "the window lists newest first")
+        expect(h.add(text: "  \n ", app: "X") == nil ? "skipped" : "added", "skipped", "whitespace-only text is not recorded")
+        expectInt(h.entries.count, 50, "…and did not evict anything")
+        expectInt(DictationHistory.wordCount("publish the  layer\nas GeoJSON"), 5, "word count splits on any whitespace")
+        expect(h.search("number 5").map(\.text).prefix(2).joined(separator: "|"), "entry number 55|entry number 54",
+               "search matches every term, newest first")
+        expectInt(h.search("slack 55").count, 0, "an odd entry is not tagged Slack (terms match text OR app)")
+        expectInt(h.search("SLACK").count, 25, "search is case-insensitive and covers the app name")
+        expectInt(h.search("").count, 50, "an empty query lists everything")
+        var accents = DictationHistory(); accents.add(text: "café résumé", app: nil)
+        expectInt(accents.search("cafe").count, 1, "search is diacritic-insensitive")
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-selftest-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.json")
+        do {
+            try h.save(to: url)
+            let perms = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? NSNumber)?.intValue
+            expect(perms.map { String($0, radix: 8) } ?? "nil", "600", "history file is 0600 (it holds dictated text)")
+            let loaded = DictationHistory.load(from: url)
+            expect(loaded.history == h ? "same" : "differs", "same", "save → load round-trips every field")
+            expect(loaded.note == nil ? "none" : loaded.note!, "none", "a good file loads without a note")
+            let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.filter { $0.hasSuffix(".tmp") } ?? []
+            expectInt(leftovers.count, 0, "no temp file left behind by the atomic write")
+            try Data("{not json".utf8).write(to: url)
+            let bad = DictationHistory.load(from: url)
+            expect(bad.history.entries.isEmpty && bad.note != nil ? "empty+note" : "other", "empty+note",
+                   "a corrupt file loads empty WITH a note (never a crash, never silent)")
+            expect(FileManager.default.fileExists(atPath: url.path) ? "kept" : "deleted", "kept",
+                   "…and the corrupt file is left for inspection, not deleted")
+        } catch {
+            expect("threw \(error)", "no throw", "history save")
+        }
+        let none = DictationHistory.load(from: dir.appendingPathComponent("absent.json"))
+        expect(none.history.entries.isEmpty && none.note == nil ? "empty" : "other", "empty", "a missing file is an empty history, no note")
+    }
+
+    /// 2.4.0 — Send Diagnostics must never carry what was said.
+    static func diagnosticsTests() {
+        print("\nSend Diagnostics — no transcript, no history, no vocabulary")
+        let secret = "SECRETWORD the merger closes friday"
+        let vocabTerm = "Zanzibarix"
+        let log = """
+        [2026-09-27 10:00:00.000] launch — Spiel 2.4.0 pid 1
+        [2026-09-27 10:00:01.000] \(DiagnosticLog.sensitiveTag)finish: inserted 6 words into Slack via ax (1.0s) — "\(secret)"
+        [2026-09-27 10:00:02.000] finish: inserted 6 words into Slack via ax (1.0s) — "he said "hi" then TAILSECRET went on"
+        [2026-09-27 10:00:03.000] vocabulary boost: kept 1 ["\(vocabTerm)"], refused 0 [] (would have overwritten dictionary words)
+        [2026-09-27 10:00:04.000] listen start: title = "Board meeting", input device = Yeti, vocabulary = 12 aliases
+        [2026-09-27 10:00:05.000] stale finish ignored (watchdog already fired) — text was: "\(secret)
+        [2026-09-27 10:00:06.000] engine ready: parakeet unified (11644 ms)
+        [2026-09-27 10:00:07.000] listen finished: 3 min, 400 words, saved to 2026-09-27 1000 Board meeting.md (180s; restarts 0)
+        [2026-09-27 10:00:08.000] LISTEN: autosave FAILED: could not write /Users/x/Documents/Spiel/Transcripts/2026-09-27 1000 Board meeting.md (disk full)
+        """
+        let tail = DiagnosticsBundle.redactedLogTail(log)
+        expect(tail.contains("SECRETWORD") ? "leaked" : "clean", "clean", "no transcript text survives in the log tail (tagged, untagged, unterminated quote)")
+        expect(tail.contains(vocabTerm) ? "leaked" : "clean", "clean", "boost lines lose their vocabulary terms")
+        expect(tail.contains("TAILSECRET") ? "leaked" : "clean", "clean",
+               "text AFTER a quote inside the transcript is blanked too (greedy, not paired)")
+        expect(tail.contains("Board meeting") ? "leaked" : "clean", "clean",
+               "a meeting title is blanked where quoted AND where it returns as a transcript file name")
+        expect(tail.contains("saved to [transcript file] (180s; restarts 0)") ? "kept" : "lost", "kept",
+               "…without losing the rest of the listen-finished line")
+        expect(tail.contains("[2026-09-27 10:00:01.000] \(DiagnosticsBundle.withheldLine)") ? "ok" : tail, "ok",
+               "a tagged line is withheld whole, timestamp kept")
+        expect(tail.contains("engine ready: parakeet unified (11644 ms)") ? "kept" : "lost", "kept",
+               "ordinary lines are untouched (the log is still useful)")
+        expect(tail.contains("into Slack via ax") ? "kept" : "lost", "kept", "the outcome around a redacted quote survives")
+        let many = (1...2500).map { "[t] line \($0)" }.joined(separator: "\n")
+        let cut = DiagnosticsBundle.redactedLogTail(many).split(separator: "\n")
+        expect("\(cut.count) \(cut.first ?? "") \(cut.last ?? "")", "2000 [t] line 501 [t] line 2500", "only the last 2000 lines")
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("spiel-selftest-diag-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let logURL = dir.appendingPathComponent("Spiel.log")
+        let folder = dir.appendingPathComponent("Spiel Diagnostics")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try log.write(to: logURL, atomically: true, encoding: .utf8)
+            let facts: [(String, String)] = [
+                ("App version", "2.4.0 (4)"),
+                ("Last dictation", "inserted 6 words into Slack via ax (1.0s)"),
+                ("Last error", "autosave failed: \"\(secret)\""),
+            ]
+            let files = try DiagnosticsBundle.write(facts: facts, logURL: logURL, into: folder)
+            expect(files.map(\.lastPathComponent).joined(separator: ","), "report.txt,Spiel-log-tail.txt",
+                   "the bundle is a report plus the log tail")
+            var all = ""
+            for f in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
+                all += (try? String(contentsOf: f, encoding: .utf8)) ?? ""
+            }
+            expect(all.contains("SECRETWORD") || all.contains(vocabTerm) ? "leaked" : "clean", "clean",
+                   "NOTHING in the written folder carries the planted transcript or vocabulary term")
+            expect(all.contains("inserted 6 words into Slack") ? "ok" : "missing", "ok", "the last-outcome report is in it")
+            expect(all.contains("Spiel.log") && all.contains("redacted") ? "ok" : "missing", "ok", "the report says the log was included, redacted")
+            let zip = dir.appendingPathComponent("d.zip")
+            try DiagnosticsBundle.zip(folder: folder, to: zip)
+            expect(FileManager.default.fileExists(atPath: zip.path) ? "zipped" : "missing", "zipped", "ditto produces the zip")
+            let noLog = try DiagnosticsBundle.write(facts: [], logURL: dir.appendingPathComponent("absent.log"),
+                                                    into: dir.appendingPathComponent("nolog"))
+            expectInt(noLog.count, 1, "no log file → report only, which says why")
+        } catch {
+            expect("threw \(error)", "no throw", "diagnostics bundle write")
+        }
+        expect(DiagnosticsBundle.chip().isEmpty ? "empty" : "ok", "ok", "chip name is read from sysctl")
+    }
+
+    /// 2.4 app-source pins: the privacy rules live in the app, which selftest cannot
+    /// run, so their wiring is asserted on the (comment-stripped) source.
+    static func appSourceRules24() {
+        print("\n2.4 — app-source rules (history privacy, diagnostics contents, hold-to-talk)")
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var main: URL?
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent("Sources/SpielApp/main.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) { main = candidate; break }
+            dir.deleteLastPathComponent()
+        }
+        guard let main, let src = try? String(contentsOf: main, encoding: .utf8) else {
+            print("  – SKIPPED: Sources/SpielApp/main.swift not found beside this binary (nothing asserted)")
+            return
+        }
+        let stripped = src.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                if let r = line.range(of: "//") { return String(line[..<r.lowerBound]) }
+                return String(line)
+            }.joined(separator: "\n")
+        func body(_ name: String) -> String? {
+            guard let start = stripped.range(of: "func \(name)(") else { return nil }
+            let rest = stripped[start.upperBound...]
+            let end = rest.range(of: "\n    fileprivate func ") ?? rest.range(of: "\n    private func ")
+                ?? rest.range(of: "\n    @objc ") ?? rest.range(of: "\n    func ") ?? rest.endIndex..<rest.endIndex
+            return String(rest[..<end.lowerBound])
+        }
+        guard let rec = body("recordHistory"), let deliver = body("deliver"), let facts = body("diagnosticFacts"),
+              let up = body("dictationKeyUp"), let begin = body("beginCapture") else {
+            expect("missing", "found", "recordHistory / deliver / diagnosticFacts / dictationKeyUp / beginCapture exist")
+            return
+        }
+        func pos(_ hay: String, _ needle: String) -> Int {
+            hay.range(of: needle).map { hay.distance(from: hay.startIndex, to: $0.lowerBound) } ?? Int.max
+        }
+        let guardAt = pos(rec, "guard !secureInputSeenThisDictation")
+        expect(guardAt < pos(rec, "history.add(") && guardAt < pos(rec, "lastDictationText =") ? "ok" : "missing", "ok",
+               "a Secure Input dictation is refused BEFORE it reaches history or Copy Last (it may be a password)")
+        expect(rec.contains("settings.historyEnabled") ? "ok" : "missing", "ok", "history off stops recording")
+        expect(deliver.contains("recordHistory(report.text") ? "ok" : "missing", "ok", "deliver() records the dictation")
+        expect(pos(deliver, "recordHistory(") < pos(deliver, "if outcome.success") ? "ok" : "late", "ok",
+               "…before branching on insert success, so a FAILED insert is kept too (the safety-net case)")
+        expect(facts.contains("lastOutcome") ? "reads" : "missing", "reads",
+               "diagnostics include the last-outcome report (counter-check for the next pin)")
+        let forbidden = ["history.", "historyModel", "lastDictationText", "vocabText", ".entries", "previewText",
+                         "report.text", "listenDoc", "apply(to:"]
+        let hits = forbidden.filter { facts.contains($0) }
+        expect(hits.isEmpty ? "clean" : hits.joined(separator: ","), "clean",
+               "diagnosticFacts never touches history, transcript or vocabulary text")
+        expect(up.contains("case .starting(.dictation): holdReleasePending = true") ? "ok" : "missing", "ok",
+               "hold-to-talk: a release while the mic is opening is remembered")
+        expect(begin.contains("if holdReleasePending") && begin.contains("stop()") ? "ok" : "missing", "ok",
+               "…and honoured when capture begins, so a tap cannot leave the mic open")
     }
 
     /// The guard only protects dictation if `transcribe()` actually routes through it,
@@ -1135,6 +1411,10 @@ enum SelfTest {
         transcriptDocumentTests()
         transcriptStoreTests()
         hotkeyRoutingTests()
+        hotkeySettingsTests()
+        historyTests()
+        diagnosticsTests()
+        appSourceRules24()
         listenSourceRules()
         boostSourceRules()
 

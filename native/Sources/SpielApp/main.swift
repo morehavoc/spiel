@@ -2,6 +2,8 @@ import AppKit
 import AVFoundation
 import Foundation
 import SpielCore
+import SwiftUI
+import UserNotifications
 
 /// Spiel v2 — native menu-bar dictation.
 ///
@@ -75,6 +77,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Name of the engine behind `session`, for the transcript's frontmatter.
     private var engineName = "unknown"
 
+    // MARK: 2.4 — settings, history, diagnostics
+    private let settings = SpielSettings()
+    private let settingsModel = SettingsModel()
+    private let historyModel = HistoryModel()
+    private var settingsWindow: NSWindow?
+    private var historyWindow: NSWindow?
+    private var history = DictationHistory()
+    /// The last dictated text, kept in memory even with history off, so Copy Last
+    /// Dictation works either way. Never set for a Secure Input dictation.
+    private var lastDictationText: String?
+    /// Hold-to-talk: the key came up while the mic was still opening. Honoured the
+    /// moment capture begins, so a quick tap does not leave the mic open.
+    private var holdReleasePending = false
+    /// The engine was changed in Settings while a session was running; reload once
+    /// the app is idle again (see `updateStatusItem`).
+    private var engineReloadPending = false
+    private var isWarming = false
+    /// Set while Settings tries a shortcut, so a refused combo does not ALSO raise a
+    /// "hotkey is not active" notification — Settings shows the reason inline and
+    /// puts the previous combo back.
+    private var quietHotkeyFailures = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLog.write("launch — Spiel \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") pid \(ProcessInfo.processInfo.processIdentifier)")
         // Two copies of Spiel (an older build left running while a new one is
@@ -120,15 +144,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startAccessibilityPoll()
         }
 
+        installMainMenu()
+        let loaded = DictationHistory.load()
+        history = loaded.history
+        lastDictationText = history.last?.text
+        if let note = loaded.note {
+            DiagnosticLog.write("history: \(note)")
+            historyModel.note = note
+        }
+        wireSettingsModel()
+        wireHistoryModel()
+
         hotkeys.setStatusHandler { [weak self] id, status in
-            Task { @MainActor in
+            // Synchronous: registration runs on the main thread, and Settings reads
+            // the status straight after `register` returns.
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 switch id {
                 case .dictation: self.hotkeyStatus = status
                 case .listen: self.listenHotkeyStatus = status
                 }
                 // Not a console log. A dead hotkey must be visible.
-                if case .failed(let desc, let reason) = status {
+                if case .failed(let desc, let reason) = status, !self.quietHotkeyFailures {
                     Notifier.post(
                         title: "Spiel hotkey is not active",
                         body: "\(desc) could not be registered: \(reason). Pick a different shortcut from the Spiel menu."
@@ -137,12 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.updateStatusItem()
             }
         }
-        hotkeys.register(.dictation, .defaultCombo) { [weak self] in
-            Task { @MainActor in self?.toggle() }
-        }
-        hotkeys.register(.listen, .listen) { [weak self] in
-            Task { @MainActor in self?.toggleListen() }
-        }
+        registerHotkey(.dictation, settings.dictationCombo)
+        registerHotkey(.listen, settings.listenCombo)
 
         // Warm the model at launch, not on first keypress. A cold Parakeet load is
         // seconds; paying it while the user is already talking is the worst moment.
@@ -203,50 +236,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return s
     }
 
-    private func warmUp() async {
-        let t0 = Date()
-        // Parakeet Unified EN first (fewest errors on his own voice, 2026-09-23), then
-        // TDT v3 (the previous default, already on disk for existing installs), then
-        // Apple. A failed download on first run degrades the engine, never the app.
-        do {
-            self.session = try await makeSession(ParakeetUnifiedTranscriber())
-            self.engineName = "parakeet-unified-en-0.6b"
-            self.engineReady = true
-            self.lastError = nil
-            DiagnosticLog.write("engine ready: parakeet unified (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
-            // Prime the vocabulary boost now (first launch downloads its ~98 MB CTC
-            // model) so the first dictation is boosted too; every dictation start
-            // re-hands the list, which only rebuilds when the file changed.
-            await self.session?.setGlossary(Glossary.load())
-            updateStatusItem()
-            return
-        } catch {
-            DiagnosticLog.write("parakeet unified failed to load: \(error) — trying parakeet v3")
+    private func makeTranscriber(_ choice: EngineChoice) -> Transcriber {
+        switch choice {
+        case .unified: return ParakeetUnifiedTranscriber()
+        case .v3: return ParakeetTranscriber()
+        case .apple: return AppleSpeechTranscriber()
         }
-        do {
-            self.session = try await makeSession(ParakeetTranscriber())
-            self.engineName = "parakeet-tdt-0.6b-v3"
-            self.engineReady = true
-            self.lastError = "Parakeet Unified unavailable, using Parakeet v3"
-            DiagnosticLog.write("engine ready: parakeet v3 (fallback, \(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
-        } catch {
-            DiagnosticLog.write("parakeet failed to load: \(error) — trying Apple SpeechAnalyzer")
-            // Fall back to Apple's on-device engine rather than dying. Parakeet needs
-            // a HuggingFace download on first run; no network on first launch should
-            // degrade the app, not brick it.
+    }
+
+    /// Loads the engine picked in Settings, falling back through the others
+    /// (`EngineChoice.fallbackOrder`). The default choice gives exactly the 2.3
+    /// order: Parakeet Unified EN (fewest errors on his own voice, 2026-09-23), TDT
+    /// v3, then Apple. A failed download degrades the engine, never the app.
+    private func warmUp() async {
+        isWarming = true
+        defer { isWarming = false; updateStatusItem() }
+        let t0 = Date()
+        let chosen = settings.engine
+        var failures: [String] = []
+        for choice in EngineChoice.fallbackOrder(chosen) {
             do {
-                self.session = try await makeSession(AppleSpeechTranscriber())
-                self.engineName = "apple-speechanalyzer"
+                let s = try await makeSession(makeTranscriber(choice))
+                self.session = s
+                self.engineName = choice.engineName
                 self.engineReady = true
-                self.lastError = "Parakeet unavailable, using Apple SpeechAnalyzer"
-                DiagnosticLog.write("engine ready: apple SpeechAnalyzer (fallback)")
+                self.lastError = choice == chosen ? nil : "\(chosen.engineName) unavailable, using \(choice.engineName)"
+                DiagnosticLog.write("engine ready: \(choice.engineName)\(choice == chosen ? "" : " (fallback from \(chosen.engineName))") (\(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
+                // Prime the vocabulary boost now (first launch downloads its ~98 MB
+                // CTC model) so the first dictation is boosted too; every dictation
+                // start re-hands the list, which only rebuilds when the file changed.
+                if choice == .unified { await s.setGlossary(Glossary.load()) }
+                return
             } catch {
-                self.engineReady = false
-                self.lastError = "no speech engine could load: \(error)"
-                DiagnosticLog.write("NO engine could load: \(error)")
+                failures.append("\(choice.engineName): \(error)")
+                DiagnosticLog.write("\(choice.engineName) failed to load: \(error)")
             }
         }
-        updateStatusItem()
+        self.engineReady = false
+        self.lastError = "no speech engine could load: \(failures.joined(separator: "; "))"
+        DiagnosticLog.write("NO engine could load")
     }
 
     private func handle(_ event: DictationSession.Event) {
@@ -368,7 +396,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing.
         let secureAtStart = TextInserter.isSecureInputEnabled()
         secureInputSeenThisDictation = secureAtStart
-        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(AudioCapture.defaultInputDeviceName()), secure input = \(secureAtStart), vocabulary = \(glossary.count) aliases")
+        capture.preferredDeviceUID = settings.microphone?.uid
+        DiagnosticLog.write("start: target app = \(inserter.capturedAppName ?? "?"), input device = \(inputDeviceLabel()), secure input = \(secureAtStart), vocabulary = \(glossary.count) aliases")
         // reset() re-arms the audio path and must complete BEFORE the mic starts
         // submitting, or the first buffers land in a disarmed sink. It is awaited,
         // not blocked on: the main actor stays free (menu, hotkey, UI), and a press
@@ -436,6 +465,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previewText = ""
             panel.setTranscript("")
             panel.show(status: "Listening…")
+            if holdReleasePending {
+                // Hold-to-talk key came up while the mic was opening: stop now.
+                holdReleasePending = false
+                DiagnosticLog.write("hold-to-talk: key released before capture began — stopping")
+                updateStatusItem()
+                stop()
+                return
+            }
         case .listen:
             let doc = TranscriptDocument()
             eventsGoToListen = true
@@ -633,7 +670,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and has no target field (design §5.6). The frontmost window title is
         // read for the default session title only.
         listenTitle = WindowTitle.frontmost() ?? ""
-        DiagnosticLog.write("listen start: title = \"\(listenTitle)\", input device = \(AudioCapture.defaultInputDeviceName()), vocabulary = \(glossary.count) aliases")
+        capture.preferredDeviceUID = settings.microphone?.uid
+        DiagnosticLog.write("listen start: title = \"\(listenTitle)\", input device = \(inputDeviceLabel()), vocabulary = \(glossary.count) aliases")
         phase = .starting(.listen)
         updateStatusItem()
         Task {
@@ -707,7 +745,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TranscriptDocument.Frontmatter(
             title: listenTitle, startedAt: listenStartedAt ?? endedAt, endedAt: endedAt,
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev")",
-            inputDevice: AudioCapture.defaultInputDeviceName(), engine: engineName
+            inputDevice: capture.activeDeviceName ?? AudioCapture.defaultInputDeviceName(), engine: engineName
         )
     }
 
@@ -808,6 +846,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let outcome = inserter.insert(report.text)
         let target = inserter.capturedAppName ?? "the previous app"
+        recordHistory(report.text, app: inserter.capturedAppName)
         if outcome.success {
             lastOutcome = "inserted \(report.text.split(separator: " ").count) words into \(target) via \(outcome.method.rawValue) (\(report.diagnosis))"
             DiagnosticLog.write("finish: \(lastOutcome!) — \(quotedForLog(report.text))", sensitive: true)
@@ -826,6 +865,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu
 
     private func updateStatusItem() {
+        if engineReloadPending, phase == .idle, !isWarming {
+            engineReloadPending = false
+            reloadEngine()
+        }
         guard let button = statusItem.button else { return }
         let symbol: String
         if isDictating {
@@ -848,7 +891,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.removeAllItems()
         switch hotkeyStatus {
         case .registered(let desc):
-            menu.addItem(withTitle: "Hotkey: \(desc)", action: nil, keyEquivalent: "")
+            menu.addItem(withTitle: "Hotkey: \(desc)\(settings.dictationMode == .hold ? " (hold to talk)" : "")", action: nil, keyEquivalent: "")
         case .failed(let desc, let reason):
             let item = NSMenuItem(
                 title: "⚠︎ Hotkey \(desc) NOT active — \(reason)",
@@ -879,8 +922,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: engineReady ? "Engine: ready" : "Engine: loading…",
                      action: nil, keyEquivalent: "")
-        menu.addItem(withTitle: "Mic: \(AudioCapture.defaultInputDeviceName()) — \(AudioCapture.microphoneAuthorization().rawValue)",
-                     action: nil, keyEquivalent: "")
+        let mic = AudioCapture.resolve(preferredUID: settings.microphone?.uid, preferredName: settings.microphone?.name,
+                                       devices: AudioCapture.inputDevices())
+        if let note = mic.note {
+            menu.addItem(withTitle: "⚠︎ Mic: \(note) (\(AudioCapture.defaultInputDeviceName()))", action: nil, keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: "Mic: \(inputDeviceLabel()) — \(AudioCapture.microphoneAuthorization().rawValue)",
+                         action: nil, keyEquivalent: "")
+        }
         if TextInserter.isSecureInputEnabled() {
             let holder = secureInputHolderCached().map { " (held by \($0))" } ?? " (identifying holder…)"
             menu.addItem(withTitle: "⚠︎ Secure Input active\(holder) — ⌘V paste is blocked",
@@ -908,6 +957,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let vocabItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
         vocabItem.target = self
         menu.addItem(vocabItem)
+        let historyItem = NSMenuItem(title: "History…", action: #selector(showHistory), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
+        let copyLast = NSMenuItem(title: lastDictationText == nil ? "Copy Last Dictation (none yet)" : "Copy Last Dictation",
+                                  action: lastDictationText == nil ? nil : #selector(copyLastDictation), keyEquivalent: "")
+        copyLast.target = self
+        menu.addItem(copyLast)
         // Off by default: the log holds every transcript verbatim, so it is only
         // written once the user asks for it. The checkmark IS the persisted state.
         let loggingItem = NSMenuItem(title: "Diagnostic Logging", action: #selector(toggleLogging), keyEquivalent: "")
@@ -978,6 +1034,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(listenItem)
         }
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        let help = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+        let diag = NSMenuItem(title: "Send Diagnostics…", action: #selector(sendDiagnostics), keyEquivalent: "")
+        diag.target = self
+        helpMenu.addItem(diag)
+        help.submenu = helpMenu
+        menu.addItem(help)
         let quit = NSMenuItem(title: "Quit Spiel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
@@ -1004,10 +1070,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// Opens Settings on the Vocabulary tab (2.4); the file itself is still one
+    /// click away there (Show in Finder).
     @objc private func editVocabulary() {
-        let url = Glossary.ensureUserFile()
-        DiagnosticLog.write("opening vocabulary file \(url.path)")
-        NSWorkspace.shared.open(url)
+        settingsModel.tab = .vocabulary
+        showSettings()
     }
 
     @objc private func openLog() {
@@ -1047,8 +1114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .unregistered: listenKey = "not registered"
         }
         return "snapshot — Spiel \(version) pid \(ProcessInfo.processInfo.processIdentifier); "
-            + "hotkey: \(hotkey); listen hotkey: \(listenKey); engine: \(engineReady ? "ready" : "loading"); "
-            + "microphone: \(AudioCapture.microphoneAuthorization().rawValue), input device: \(AudioCapture.defaultInputDeviceName()); "
+            + "hotkey: \(hotkey) (\(settings.dictationMode.rawValue)); listen hotkey: \(listenKey); "
+            + "engine: \(engineName) \(engineReady ? "ready" : "loading") (chosen: \(settings.engine.rawValue)); "
+            + "microphone: \(AudioCapture.microphoneAuthorization().rawValue), input device: \(inputDeviceLabel()); "
             + "accessibility effective: \(TextInserter.hasAccessibilityPermission()); "
             + "secure input: \(TextInserter.isSecureInputEnabled()); "
             + "open at login: \(LaunchAtLogin.label(LaunchAtLogin.state())); "
@@ -1087,25 +1155,410 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuPauseListen() { pauseListening() }
     @objc private func menuResumeListen() { resumeListening() }
     @objc private func retryHotkey() {
-        hotkeys.register(.dictation, .defaultCombo) { [weak self] in
-            Task { @MainActor in self?.toggle() }
-        }
+        registerHotkey(.dictation, settings.dictationCombo)
     }
-    /// F5 is the dictation fallback only; Listen has no fallback key.
+    /// F5 is the dictation fallback only; Listen has no fallback key. Since 2.4 the
+    /// choice is saved like any Settings shortcut (Settings → Reset puts ⌘⇧D back).
     @objc private func useF5() {
-        hotkeys.register(.dictation, .f5) { [weak self] in
-            Task { @MainActor in self?.toggle() }
+        guard !settings.listenCombo.sameKeys(as: .f5) else {
+            lastError = "F5 is already the Listen shortcut — pick another in Settings"
+            updateStatusItem()
+            return
         }
+        if registerHotkey(.dictation, .f5).isHealthy { settings.dictationCombo = .f5 }
+        refreshSettingsModel()
     }
     @objc private func retryListenHotkey() {
-        hotkeys.register(.listen, .listen) { [weak self] in
-            Task { @MainActor in self?.toggleListen() }
-        }
+        registerHotkey(.listen, settings.listenCombo)
     }
 
     @objc private func grantAccessibility() {
         TextInserter.requestAccessibilityPermission()
         startAccessibilityPoll()
+    }
+}
+
+// MARK: - 2.4: hotkeys from Settings, hold-to-talk, Settings / History / Diagnostics
+
+extension AppDelegate: NSWindowDelegate {
+
+    /// Registers `combo` for `id` with the right handlers. Dictation always gets a
+    /// release handler; whether it acts is decided per event from the current mode,
+    /// so switching modes needs no re-registration.
+    @discardableResult
+    fileprivate func registerHotkey(_ id: HotkeyManager.Id, _ combo: HotkeyManager.Combo) -> HotkeyManager.Status {
+        switch id {
+        case .dictation:
+            return hotkeys.register(.dictation, combo,
+                onTrigger: { [weak self] in Task { @MainActor in self?.dictationKeyDown() } },
+                onRelease: { [weak self] in Task { @MainActor in self?.dictationKeyUp() } })
+        case .listen:
+            return hotkeys.register(.listen, combo) { [weak self] in Task { @MainActor in self?.toggleListen() } }
+        }
+    }
+
+    fileprivate func dictationKeyDown() {
+        guard settings.dictationMode == .hold else { toggle(); return }
+        switch phase {
+        case .idle:
+            holdReleasePending = false
+            start()
+        case .recording(.dictation):
+            break  // already held; a stray repeat must not stop it
+        default:
+            toggle()  // same refusals / ignores as toggle mode (Listen running, busy)
+        }
+    }
+
+    fileprivate func dictationKeyUp() {
+        guard settings.dictationMode == .hold else { return }
+        switch phase {
+        case .recording(.dictation): stop()
+        case .starting(.dictation): holdReleasePending = true
+        default: break
+        }
+    }
+
+    /// What the log and menu call the input: the picked device, or the default.
+    fileprivate func inputDeviceLabel() -> String {
+        switch AudioCapture.resolve(preferredUID: settings.microphone?.uid, preferredName: settings.microphone?.name,
+                                    devices: AudioCapture.inputDevices()) {
+        case .systemDefault: return "\(AudioCapture.defaultInputDeviceName()) (system default)"
+        case .device(let d): return d.name
+        case .missing(_, let name): return "\(AudioCapture.defaultInputDeviceName()) (system default — \(name) not connected)"
+        }
+    }
+
+    fileprivate func reloadEngine() {
+        DiagnosticLog.write("engine change requested: \(settings.engine.rawValue) — reloading")
+        session = nil
+        engineReady = false
+        updateStatusItem()
+        refreshSettingsModel()
+        Task {
+            await self.warmUp()
+            self.refreshSettingsModel()
+        }
+    }
+
+    // MARK: History
+
+    /// Called for every dictation that produced text, inserted or not — a failed
+    /// insert is exactly when he needs it back. A dictation taken under Secure
+    /// Input is NOT kept (it is plausibly a password; see `quotedForLog`).
+    fileprivate func recordHistory(_ text: String, app: String?) {
+        guard !secureInputSeenThisDictation else {
+            DiagnosticLog.write("history: dictation not kept — Secure Input was active")
+            return
+        }
+        lastDictationText = text
+        guard settings.historyEnabled else { return }
+        history.add(text: text, app: app)
+        saveHistory()
+    }
+
+    fileprivate func saveHistory() {
+        do {
+            try history.save()
+            historyModel.note = nil
+        } catch {
+            lastError = "history could not be saved: \(error.localizedDescription)"
+            DiagnosticLog.write("history save FAILED: \(error)")
+        }
+        historyModel.history = history
+    }
+
+    @objc fileprivate func copyLastDictation() {
+        guard let text = lastDictationText else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        DiagnosticLog.write("copied last dictation to the clipboard (\(text.count) chars)")
+    }
+
+    fileprivate func clearHistory() {
+        history.clear()
+        lastDictationText = nil
+        do {
+            try history.save()
+        } catch {
+            DiagnosticLog.write("history clear: save failed (\(error)) — removing the file")
+            try? FileManager.default.removeItem(at: DictationHistory.defaultURL)
+        }
+        historyModel.history = history
+        historyModel.selection = []
+        DiagnosticLog.write("history cleared by user")
+        updateStatusItem()
+    }
+
+    fileprivate func wireHistoryModel() {
+        historyModel.history = history
+        historyModel.enabled = settings.historyEnabled
+        historyModel.onClear = { [weak self] in self?.clearHistory() }
+        historyModel.onOpenSettings = { [weak self] in self?.showSettings() }
+    }
+
+    @objc fileprivate func showHistory() {
+        historyModel.history = history
+        historyModel.enabled = settings.historyEnabled
+        let window = historyWindow ?? makeWindow(title: "Spiel History", view: HistoryView(model: historyModel),
+                                                 size: NSSize(width: 600, height: 520), autosave: "SpielHistory")
+        historyWindow = window
+        present(window)
+    }
+
+    // MARK: Settings
+
+    fileprivate func wireSettingsModel() {
+        let m = settingsModel
+        m.applyHotkey = { [weak self] id, combo in self?.applyHotkeyFromSettings(id, combo) }
+        m.setHotkeysSuspended = { [weak self] on in
+            self?.hotkeys.setSuspended(on)
+            DiagnosticLog.write("hotkeys \(on ? "suspended while recording a shortcut" : "resumed")")
+            self?.updateStatusItem()
+        }
+        m.setDictationMode = { [weak self] mode in
+            self?.settings.dictationMode = mode
+            DiagnosticLog.write("dictation mode → \(mode.rawValue)")
+            self?.updateStatusItem()
+        }
+        m.setEngine = { [weak self] choice in
+            guard let self else { return }
+            self.settings.engine = choice
+            if self.phase == .idle && !self.isWarming { self.reloadEngine() } else {
+                self.engineReloadPending = true
+                self.settingsModel.engineStatus = "Switches to \(choice.engineName) when the current session ends"
+            }
+        }
+        m.setMicrophone = { [weak self] uid, name in
+            guard let self else { return }
+            self.settings.microphone = uid.map { ($0, name ?? $0) }
+            DiagnosticLog.write("microphone → \(uid == nil ? "system default" : name ?? uid!) (applies from the next start)")
+            self.updateStatusItem()
+        }
+        m.toggleOpenAtLogin = { [weak self] in self?.toggleLaunchAtLogin(); self?.refreshSettingsModel() }
+        m.toggleDiagnosticLogging = { [weak self] in self?.toggleLogging(); self?.refreshSettingsModel() }
+        m.setHistoryEnabled = { [weak self] on in
+            guard let self else { return }
+            self.settings.historyEnabled = on
+            self.historyModel.enabled = on
+            DiagnosticLog.write("history \(on ? "ON" : "OFF") (existing entries kept until cleared)")
+        }
+        m.clearHistory = { [weak self] in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "Clear dictation history?"
+            alert.informativeText = "This deletes the \(self.history.entries.count) saved dictations from this Mac."
+            alert.addButton(withTitle: "Clear")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons.first?.hasDestructiveAction = true
+            let run = { (r: NSApplication.ModalResponse) in if r == .alertFirstButtonReturn { self.clearHistory() } }
+            if let w = self.settingsWindow { alert.beginSheetModal(for: w, completionHandler: run) } else { run(alert.runModal()) }
+        }
+        m.refresh = { [weak self] in self?.refreshSettingsModel() }
+        refreshSettingsModel()
+    }
+
+    /// Tries `combo`; on failure the previous combo goes back and the reason is
+    /// returned for the field. Persisted only once it is actually registered.
+    fileprivate func applyHotkeyFromSettings(_ id: HotkeyManager.Id, _ combo: HotkeyManager.Combo) -> String? {
+        let previous = id == .dictation ? settings.dictationCombo : settings.listenCombo
+        quietHotkeyFailures = true
+        defer { quietHotkeyFailures = false }
+        let status = registerHotkey(id, combo)
+        if case .failed(_, let reason) = status {
+            registerHotkey(id, previous)
+            DiagnosticLog.write("hotkey \(id) → \(combo.description) refused: \(reason); kept \(previous.description)")
+            refreshSettingsModel()
+            return "\(combo.description) could not be registered: \(reason). Kept \(previous.description)."
+        }
+        if id == .dictation { settings.dictationCombo = combo } else { settings.listenCombo = combo }
+        DiagnosticLog.write("hotkey \(id) → \(combo.description)")
+        refreshSettingsModel()
+        updateStatusItem()
+        return nil
+    }
+
+    fileprivate func refreshSettingsModel() {
+        let m = settingsModel
+        m.dictationCombo = hotkeys.combo(.dictation) ?? settings.dictationCombo
+        m.listenCombo = hotkeys.combo(.listen) ?? settings.listenCombo
+        m.dictationMode = settings.dictationMode
+        m.engine = settings.engine
+        if !engineReloadPending {
+            m.engineStatus = isWarming || !engineReady && lastError == nil
+                ? "Loading…"
+                : engineReady ? "In use: \(engineName)\(lastError.map { " — \($0)" } ?? "")" : "Not loaded: \(lastError ?? "unknown")"
+        }
+        m.devices = AudioCapture.inputDevices()
+        m.systemDefaultName = AudioCapture.defaultInputDeviceName()
+        m.microphoneUID = settings.microphone?.uid ?? ""
+        m.microphoneName = settings.microphone?.name ?? ""
+        let launch = LaunchAtLogin.state()
+        m.openAtLogin = launch.isChecked
+        switch launch {
+        case .requiresApproval: m.openAtLoginNote = "Blocked in System Settings → General → Login Items — only you can allow it there."
+        case .unavailable(let why): m.openAtLoginNote = why
+        default: m.openAtLoginNote = launch.isChecked ? LaunchAtLogin.locationNote(bundlePath: Bundle.main.bundleURL.path) : nil
+        }
+        m.diagnosticLogging = DiagnosticLog.isEnabled
+        m.historyEnabled = settings.historyEnabled
+    }
+
+    @objc fileprivate func showSettings() {
+        refreshSettingsModel()
+        settingsModel.loadVocabulary()
+        let window = settingsWindow ?? makeWindow(title: "Spiel Settings", view: SettingsView(model: settingsModel),
+                                                  size: NSSize(width: 600, height: 820), autosave: "SpielSettings")
+        settingsWindow = window
+        present(window)
+    }
+
+    fileprivate func makeWindow<V: View>(title: String, view: V, size: NSSize, autosave: String) -> NSWindow {
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        w.title = title
+        w.contentView = NSHostingView(rootView: view)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.center()
+        w.setFrameAutosaveName(autosave)
+        return w
+    }
+
+    fileprivate func present(_ window: NSWindow) {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Closing Settings mid-recording must give the hotkeys back.
+        if (notification.object as? NSWindow) === settingsWindow { settingsModel.cancelRecording() }
+    }
+
+    /// An accessory app has no menu bar of its own, but key equivalents are routed
+    /// through `NSApp.mainMenu` — without one, ⌘C/⌘V/⌘A/⌘Z do nothing in the
+    /// vocabulary editor or the history search field, and ⌘W does not close.
+    fileprivate func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let s = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        s.target = self
+        appMenu.addItem(s)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(withTitle: "Quit Spiel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
+
+    // MARK: Diagnostics
+
+    /// Help → Send Diagnostics…: facts about the machine and the app, plus the
+    /// redacted log tail, zipped where he chooses (default Desktop) and revealed.
+    /// Never any transcript, history or vocabulary text — see `DiagnosticsBundle`.
+    @objc fileprivate func sendDiagnostics() {
+        Task {
+            let facts = await diagnosticFacts()
+            let stamp: String = {
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "en_US_POSIX")
+                f.dateFormat = "yyyy-MM-dd HHmm"
+                return f.string(from: Date())
+            }()
+            let panel = NSSavePanel()
+            panel.title = "Save Spiel Diagnostics"
+            panel.message = "Contains app and system state and a redacted log — no dictated text, history or vocabulary."
+            panel.nameFieldStringValue = "Spiel Diagnostics \(stamp).zip"
+            panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            panel.allowedContentTypes = [.zip]
+            NSApp.activate(ignoringOtherApps: true)
+            guard panel.runModal() == .OK, let dest = panel.url else { return }
+            let staging = FileManager.default.temporaryDirectory
+                .appendingPathComponent("spiel-diag-\(UUID().uuidString)", isDirectory: true)
+            let folder = staging.appendingPathComponent("Spiel Diagnostics \(stamp)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            do {
+                DiagnosticLog.flush()
+                try DiagnosticsBundle.write(facts: facts, logURL: DiagnosticLog.url, into: folder)
+                try DiagnosticsBundle.zip(folder: folder, to: dest)
+                DiagnosticLog.write("diagnostics saved to \(dest.path)")
+                NSWorkspace.shared.activateFileViewerSelecting([dest])
+            } catch {
+                DiagnosticLog.write("diagnostics FAILED: \(error)")
+                Notifier.post(title: "Spiel could not save diagnostics", body: "\(error.localizedDescription)")
+            }
+        }
+    }
+
+    fileprivate func hotkeyLine(_ st: HotkeyManager.Status) -> String {
+        switch st {
+        case .registered(let d): return "\(d) registered"
+        case .failed(let d, let why): return "\(d) NOT active — \(why)"
+        case .unregistered: return "not registered"
+        }
+    }
+
+    fileprivate func diagnosticFacts() async -> [(String, String)] {
+        let info = Bundle.main.infoDictionary
+        let notif = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        let notifText: String = {
+            switch notif {
+            case .authorized: return "authorized"
+            case .denied: return "denied"
+            case .notDetermined: return "not determined"
+            case .provisional: return "provisional"
+            case .ephemeral: return "ephemeral"
+            @unknown default: return "unknown (\(notif.rawValue))"
+            }
+        }()
+        let secure = TextInserter.isSecureInputEnabled()
+        let holder: String? = secure ? await Task.detached { TextInserter.secureInputHolder() }.value : nil
+        let models = await Task.detached { DiagnosticsBundle.modelInventory() }.value
+        let vocabTerms = FileManager.default.fileExists(atPath: Glossary.userFileURL.path)
+            ? "custom file present, \(Glossary.load().count) aliases loaded (contents not included)"
+            : "built-in only (\(Glossary().count) aliases)"
+        return [
+            ("App version", "\(info?["CFBundleShortVersionString"] ?? "?") (build \(info?["CFBundleVersion"] ?? "?"))"),
+            ("macOS", ProcessInfo.processInfo.operatingSystemVersionString),
+            ("Chip", DiagnosticsBundle.chip()),
+            ("Memory", ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)),
+            ("Microphone permission", AudioCapture.microphoneAuthorization().rawValue),
+            ("Accessibility trusted", "\(TextInserter.hasAccessibilityPermission())"),
+            ("Notifications", notifText),
+            ("Dictation hotkey", hotkeyLine(hotkeyStatus) + " — mode: \(settings.dictationMode.rawValue)"),
+            ("Listen hotkey", hotkeyLine(listenHotkeyStatus)),
+            ("Engine chosen", settings.engine.engineName),
+            ("Engine in use", engineReady ? engineName : "not loaded"),
+            ("Apple SpeechAnalyzer", AppleSpeechTranscriber.isAvailable ? "available" : "not available (needs macOS 26)"),
+            ("Models on disk", models),
+            ("Microphone chosen", settings.microphone.map { "\($0.name) (\($0.uid))" } ?? "system default"),
+            ("Microphone resolved", inputDeviceLabel()),
+            ("Input devices", AudioCapture.inputDevices().map(\.name).joined(separator: ", ")),
+            ("Last dictation", lastOutcome ?? "none yet"),
+            ("Last error", lastError ?? "none"),
+            ("Secure Input", secure ? "ACTIVE — held by \(holder ?? "unknown")" : "off"),
+            ("Diagnostic logging", DiagnosticLog.isEnabled ? "on" : "off"),
+            ("Open at Login", LaunchAtLogin.label(LaunchAtLogin.state())),
+            ("History", settings.historyEnabled ? "on" : "off"),
+            ("Vocabulary", vocabTerms),
+            // Quotes stripped: the report blanks quoted spans, and this one is not private.
+            ("Signature", Self.signatureSummary().replacingOccurrences(of: "\"", with: "")),
+        ]
     }
 }
 

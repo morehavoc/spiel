@@ -26,13 +26,25 @@ public final class HotkeyManager {
         public var isHealthy: Bool { if case .registered = self { return true }; return false }
     }
 
-    public struct Combo: Equatable, Sendable {
+    public struct Combo: Equatable, Sendable, Codable {
         public var keyCode: UInt32
         public var modifiers: UInt32
         public var description: String
 
         public init(keyCode: UInt32, modifiers: UInt32, description: String) {
             self.keyCode = keyCode; self.modifiers = modifiers; self.description = description
+        }
+
+        /// A combo the user recorded in Settings; the description is derived, so a
+        /// stored combo can never carry a label that disagrees with its keys.
+        public init(keyCode: UInt32, modifiers: UInt32) {
+            self.init(keyCode: keyCode, modifiers: modifiers,
+                      description: KeyNames.describe(keyCode: keyCode, modifiers: modifiers))
+        }
+
+        /// Same physical keys, whatever the label says. Duplicate checks use this.
+        public func sameKeys(as other: Combo) -> Bool {
+            keyCode == other.keyCode && modifiers == other.modifiers
         }
 
         /// Cmd+Shift+D. Deliberately NOT the old default of Cmd+\ — a backslash
@@ -67,13 +79,19 @@ public final class HotkeyManager {
     /// The system calls, abstracted. `register` returns an opaque token that
     /// `unregister` takes back.
     public protocol Backend {
-        func installHandler(_ route: @escaping (UInt32) -> Void) -> Result<Void, RegisterError>
+        /// `route(id, released)` — `released` is true for the key-UP event, which
+        /// hold-to-talk needs; press-to-toggle ignores it.
+        func installHandler(_ route: @escaping (UInt32, Bool) -> Void) -> Result<Void, RegisterError>
         func register(_ combo: Combo, id: UInt32) -> Result<AnyObject, RegisterError>
         func unregister(_ token: AnyObject)
         func removeHandler()
     }
 
-    private var entries: [Id: (combo: Combo, token: AnyObject?, onTrigger: () -> Void)] = [:]
+    private var entries: [Id: (combo: Combo, token: AnyObject?, onTrigger: () -> Void, onRelease: (() -> Void)?)] = [:]
+    /// While true the Carbon registrations are released but entries and statuses are
+    /// kept — the Settings shortcut recorder needs ⌘⇧D to reach ITS key view rather
+    /// than start a dictation, and the menu must not flash a dead-hotkey warning.
+    public private(set) var isSuspended = false
     private var statuses: [Id: Status] = [:]
     private var onStatusChange: ((Id, Status) -> Void)?
     private let backend: Backend
@@ -95,10 +113,11 @@ public final class HotkeyManager {
     /// Register (or re-register) one hotkey. Only THIS id is unregistered first;
     /// the other keeps working whatever happens here.
     @discardableResult
-    public func register(_ id: Id, _ combo: Combo, onTrigger: @escaping () -> Void) -> Status {
+    public func register(_ id: Id, _ combo: Combo, onTrigger: @escaping () -> Void,
+                         onRelease: (() -> Void)? = nil) -> Status {
         unregister(id)
         if !handlerInstalled {
-            switch backend.installHandler({ [weak self] raw in self?.dispatch(raw: raw) }) {
+            switch backend.installHandler({ [weak self] raw, released in self?.dispatch(raw: raw, released: released) }) {
             case .success:
                 handlerInstalled = true
             case .failure(let e):
@@ -106,9 +125,15 @@ public final class HotkeyManager {
                                           reason: "could not install the Carbon event handler (\(Self.describe(e)))"))
             }
         }
+        if isSuspended {
+            // Remembered, registered with Carbon on resume. Reported healthy: the
+            // suspension is ours and lasts only while the recorder field is active.
+            entries[id] = (combo, nil, onTrigger, onRelease)
+            return finish(id, .registered(description: combo.description))
+        }
         switch backend.register(combo, id: id.rawValue) {
         case .success(let token):
-            entries[id] = (combo, token, onTrigger)
+            entries[id] = (combo, token, onTrigger, onRelease)
             return finish(id, .registered(description: combo.description))
         case .failure(let e):
             return finish(id, .failed(description: combo.description, reason: Self.describe(e, combo: combo)))
@@ -125,9 +150,36 @@ public final class HotkeyManager {
 
     /// The route from the Carbon callback: an event whose id matches a registered
     /// entry fires that entry's handler and nothing else. Unknown ids are dropped.
-    public func dispatch(raw: UInt32) {
-        guard let id = Id(rawValue: raw), let entry = entries[id] else { return }
-        entry.onTrigger()
+    public func dispatch(raw: UInt32, released: Bool = false) {
+        guard !isSuspended, let id = Id(rawValue: raw), let entry = entries[id] else { return }
+        if released { entry.onRelease?() } else { entry.onTrigger() }
+    }
+
+    /// The combo currently held for `id` (registered or suspended), if any.
+    public func combo(_ id: Id) -> Combo? { entries[id]?.combo }
+
+    /// Release every Carbon registration (true) or take them back (false). Entries
+    /// survive; a combo that cannot be re-taken on resume reports `.failed` like any
+    /// other registration, so a shortcut grabbed by another app meanwhile is seen.
+    public func setSuspended(_ on: Bool) {
+        guard on != isSuspended else { return }
+        isSuspended = on
+        for id in Id.allCases {
+            guard let entry = entries[id] else { continue }
+            if on {
+                if let token = entry.token { backend.unregister(token) }
+                entries[id]?.token = nil
+            } else {
+                switch backend.register(entry.combo, id: id.rawValue) {
+                case .success(let token):
+                    entries[id]?.token = token
+                    _ = finish(id, .registered(description: entry.combo.description))
+                case .failure(let e):
+                    entries[id] = nil
+                    _ = finish(id, .failed(description: entry.combo.description, reason: Self.describe(e, combo: entry.combo)))
+                }
+            }
+        }
     }
 
     private func finish(_ id: Id, _ newStatus: Status) -> Status {
@@ -158,16 +210,16 @@ public final class HotkeyManager {
     /// Carbon callback is a C function pointer and needs a static route back).
     public final class CarbonBackend: Backend {
         private var handlerRef: EventHandlerRef?
-        nonisolated(unsafe) private static var route: ((UInt32) -> Void)?
+        nonisolated(unsafe) private static var route: ((UInt32, Bool) -> Void)?
 
         public init() {}
 
-        public func installHandler(_ route: @escaping (UInt32) -> Void) -> Result<Void, RegisterError> {
+        public func installHandler(_ route: @escaping (UInt32, Bool) -> Void) -> Result<Void, RegisterError> {
             Self.route = route
-            var eventType = EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyPressed)
-            )
+            var eventTypes = [
+                EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+            ]
             let err = InstallEventHandler(
                 GetApplicationEventTarget(),
                 { _, event, _ -> OSStatus in
@@ -178,10 +230,11 @@ public final class HotkeyManager {
                     )
                     guard status == noErr else { return status }
                     let id = hotKeyID.id
-                    DispatchQueue.main.async { CarbonBackend.route?(id) }
+                    let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+                    DispatchQueue.main.async { CarbonBackend.route?(id, released) }
                     return noErr
                 },
-                1, &eventType, nil, &handlerRef
+                eventTypes.count, &eventTypes, nil, &handlerRef
             )
             return err == noErr ? .success(()) : .failure(.handlerInstall(err))
         }
