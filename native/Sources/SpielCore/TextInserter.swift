@@ -149,15 +149,21 @@ public final class TextInserter: @unchecked Sendable {
         }
 
         if Self.isSecureInputEnabled() {
-            // Leave the text on the pasteboard so the work is not lost, and say why —
-            // including WHO is holding Secure Input, because that is the fix.
+            // Paste ANYWAY (2.5.2). Secure Input stops other processes READING the
+            // keyboard; it does not stop a trusted process POSTING keystrokes (password
+            // managers auto-type into secure fields this way). Refusing outright made a
+            // stale flag — left on by a holder that had already exited, seen on macOS
+            // 27 on 2026-09-30 — block dictation into EVERY app. The text is left on the
+            // clipboard (not restored) so a paste that did not land is one Cmd+V away.
             setPasteboard(text)
             scheduleRescueClear(text)
-            let holder = Self.secureInputHolder().map { " Held by \($0)." } ?? ""
+            guard postCommandV() else {
+                return Outcome(method: .failed, detail: "could not post Cmd+V (CGEvent creation failed). Your text is on the clipboard -- press Cmd+V.")
+            }
+            let holder = Self.secureInputHolder().map { " (held by \($0))" } ?? ""
             return Outcome(
-                method: .failed,
-                detail: "macOS Secure Input is active, so synthetic paste is blocked.\(holder) "
-                      + "Your text is on the clipboard -- press Cmd+V."
+                method: .paste,
+                detail: "macOS Secure Input was on\(holder); pasted anyway and left the text on the clipboard in case it did not land"
             )
         }
 

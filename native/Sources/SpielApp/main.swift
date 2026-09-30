@@ -887,7 +887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let target = inserter.capturedAppName ?? "the previous app"
         recordHistory(report.text, app: inserter.capturedAppName)
         if outcome.success {
-            lastOutcome = "inserted \(report.text.split(separator: " ").count) words into \(target) via \(outcome.method.rawValue) (\(report.diagnosis))"
+            lastOutcome = "inserted \(report.text.split(separator: " ").count) words into \(target) via \(outcome.method.rawValue) (\(report.diagnosis))" + (outcome.detail.map { " — \($0)" } ?? "")
             DiagnosticLog.write("finish: \(lastOutcome!) — \(quotedForLog(report.text))", sensitive: true)
         } else {
             let why = outcome.detail ?? "unknown reason — the text is on your clipboard"
