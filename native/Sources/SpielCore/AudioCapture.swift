@@ -18,6 +18,7 @@ public final class AudioCapture: @unchecked Sendable {
     private let converterLock = NSLock()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
+    private var monoFormat: AVAudioFormat?
     private var onSamples: (([Float]) -> Void)?
     private var configObserver: NSObjectProtocol?
     private(set) public var isRunning = false
@@ -247,9 +248,20 @@ public final class AudioCapture: @unchecked Sendable {
         // The mic's native rate is typically 44.1/48 kHz; convert rather than asking
         // the hardware for 16 kHz, which many devices silently refuse. Rebuilt under
         // the lock on every arm because the audio thread may be inside `convert`.
+        //
+        // The channels are mixed to mono HERE, never by the converter: AVAudioConverter
+        // turns a multichannel input that carries a channel layout (the 3-channel
+        // MacBook Pro Microphone array, a 2-channel USB mic with a discrete layout)
+        // into EXACT ZEROS when asked for mono — downmix on or off. A Mac whose mic is
+        // 1 channel never sees it, which is how it shipped: jaws-mini's inputs are all
+        // mono, Christopher's MacBook Pro read "peak 0.0000" on every input (2.5.1).
+        guard let monoIn = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputFormat.sampleRate,
+                                         channels: 1, interleaved: false)
+        else { throw CaptureError.formatUnavailable }
         converterLock.lock()
         targetFormat = target
-        converter = AVAudioConverter(from: inputFormat, to: target)
+        monoFormat = monoIn
+        converter = AVAudioConverter(from: monoIn, to: target)
         converterLock.unlock()
 
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -316,10 +328,11 @@ public final class AudioCapture: @unchecked Sendable {
     private func convert(_ buffer: AVAudioPCMBuffer) -> [Float]? {
         converterLock.lock()
         defer { converterLock.unlock() }
-        guard let converter, let targetFormat else { return nil }
+        guard let converter, let targetFormat, let monoFormat,
+              let mono = Self.downmixToMono(buffer, format: monoFormat) else { return nil }
 
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1024
+        let ratio = targetFormat.sampleRate / mono.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(mono.frameLength) * ratio) + 1024
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
             return nil
         }
@@ -333,11 +346,38 @@ public final class AudioCapture: @unchecked Sendable {
             }
             supplied = true
             status.pointee = .haveData
-            return buffer
+            return mono
         }
         if error != nil { return nil }
         guard let channel = out.floatChannelData?[0], out.frameLength > 0 else { return nil }
         return Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+    }
+
+    /// Averages every channel of a float buffer into one channel of `format` (mono,
+    /// same rate). Public so selftest can pin the multichannel case against the
+    /// converter path it replaced.
+    public static func downmixToMono(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        guard let src = buffer.floatChannelData,
+              let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(buffer.frameLength, 1)),
+              let dst = out.floatChannelData?[0] else { return nil }
+        let n = Int(buffer.frameLength)
+        let chans = Int(buffer.format.channelCount)
+        let stride = buffer.stride
+        out.frameLength = buffer.frameLength
+        if chans == 1 {
+            for i in 0..<n { dst[i] = src[0][i * stride] }
+        } else {
+            // floatChannelData is per-channel for deinterleaved buffers, and one
+            // pointer with a stride for interleaved ones.
+            let interleaved = buffer.format.isInterleaved
+            let scale = 1 / Float(chans)
+            for i in 0..<n {
+                var sum: Float = 0
+                for c in 0..<chans { sum += interleaved ? src[0][i * stride + c] : src[c][i] }
+                dst[i] = sum * scale
+            }
+        }
+        return out
     }
 
     /// Loads a WAV/AIFF/CAF file as 16 kHz mono float. Used by the CLI so

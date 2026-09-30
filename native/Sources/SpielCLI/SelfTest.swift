@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import Foundation
 import SpielCore
@@ -446,6 +447,37 @@ enum SelfTest {
                "an unplugged pick falls back to the default AND says so by name")
         expect(AudioCapture.resolve(preferredUID: "yeti-uid", devices: [yeti]).note == nil ? "quiet" : "noted", "quiet",
                "a connected pick carries no fallback note")
+
+        print("\nMulti-channel microphones — mixed to mono before conversion (2.5.1)")
+        // The MacBook Pro Microphone is a 3-channel array; AVAudioConverter turned it
+        // into exact zeros ("peak 0.0000") when asked for mono. Mixed by hand instead.
+        for (label, fmt) in [
+            ("3-ch discrete (MacBook Pro Microphone)", AVAudioFormat(standardFormatWithSampleRate: 48_000,
+                channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3)!)),
+            ("2-ch discrete (USB mic)", AVAudioFormat(standardFormatWithSampleRate: 48_000,
+                channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 2)!)),
+            ("2-ch stereo", AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!),
+            ("1-ch", AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!),
+        ] {
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 4800)!
+            buf.frameLength = 4800
+            for c in 0..<Int(fmt.channelCount) {
+                for i in 0..<4800 { buf.floatChannelData![c][i] = 0.3 * sinf(2 * .pi * 440 * Float(i) / 48_000) }
+            }
+            let monoFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+            let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+            var peak: Float = 0
+            if let mono = AudioCapture.downmixToMono(buf, format: monoFmt), let conv = AVAudioConverter(from: monoFmt, to: target),
+               let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: 4096) {
+                var given = false
+                conv.convert(to: out, error: nil) { _, st in
+                    if given { st.pointee = .noDataNow; return nil }
+                    given = true; st.pointee = .haveData; return mono
+                }
+                for i in 0..<Int(out.frameLength) { peak = max(peak, abs(out.floatChannelData![0][i])) }
+            }
+            expect(peak > 0.25 ? "signal" : String(format: "peak %.4f", peak), "signal", "\(label) reaches 16 kHz mono with its signal")
+        }
     }
 
     /// 2.4.0 — dictation history: cap, order, search, file mode, corrupt file.
