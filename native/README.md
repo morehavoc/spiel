@@ -68,7 +68,8 @@ built-ins), `-q` quiet.
   **3** engine or model failure (also when some segments failed; output holds what did
   transcribe) · **4** no speech found (a valid, silent file — not a failure; json still
   prints, with empty `segments`). Several files: all attempted, exit = most severe of
-  3 > 2 > 4.
+  3 > 2 > 4. **5** no license: official build only, trial over or license revoked;
+  one line on stderr, nothing transcribed. A source build never exits 5.
 - Inputs: anything AVFoundation reads (wav aiff caf m4a mp3 aac mp4 mov), or `-` for
   stdin. The first run of an engine downloads its model (~615 MB unified) to
   `~/Library/Application Support/FluidAudio/Models`, progress on stderr.
@@ -221,6 +222,9 @@ The user-editable vocabulary file lives outside the repo, at
 merged over the built-in `Glossary` terms.
 
 ## Building
+
+Official signed releases (license gate, Developer ID, notarization, Sparkle
+updates): see [RELEASING.md](RELEASING.md). A source build has no license gate.
 
 ```
 swift build -c release

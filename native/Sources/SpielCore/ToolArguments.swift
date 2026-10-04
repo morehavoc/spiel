@@ -12,6 +12,9 @@ public enum ToolArguments {
         case unreadable = 2
         case engine = 3
         case noSpeech = 4
+        /// Official build only: the trial is over and no license is active (or it
+        /// was revoked). Nothing was transcribed.
+        case unlicensed = 5
     }
 
     public struct UsageError: Error, Equatable, CustomStringConvertible {

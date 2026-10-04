@@ -7,7 +7,8 @@ import SpielCore
 //
 // Contract, also in README § For AI agents: the RESULT goes to stdout and nothing
 // else does; progress and diagnostics go to stderr (`--quiet` silences Spiel's
-// own); exit 0 ok, 1 usage, 2 file unreadable, 3 engine/model failure, 4 no speech.
+// own); exit 0 ok, 1 usage, 2 file unreadable, 3 engine/model failure, 4 no speech,
+// 5 unlicensed (official build only: trial over or license revoked).
 
 typealias Exit = ToolArguments.Exit
 
@@ -38,7 +39,7 @@ func usageError(_ message: String, help: String) -> Never {
     finish(.usage)
 }
 
-let version = "spiel \(SpielVersion.short) (build \(SpielVersion.build))"
+let version = "spiel \(SpielVersion.short) (build \(SpielVersion.build)\(LicenseBuild.isOfficial ? ", official" : ""))"
 
 let mainHelp = """
 spiel \(SpielVersion.short) — on-device transcription from the command line
@@ -53,7 +54,7 @@ usage:
   spiel --version
 
 Results go to stdout, progress to stderr. Exit: 0 ok, 1 usage, 2 file unreadable,
-3 engine/model failure, 4 no speech found.
+3 engine/model failure, 4 no speech found, 5 no license (trial over).
 """
 
 let transcribeHelp = """
@@ -74,7 +75,8 @@ usage: spiel transcribe <file|-> [...] [options]
 
 Several files: json prints an array; text/md print each under "==> name <=="; srt/vtt
 need -o <folder>. Exit: 0 ok, 1 usage, 2 unreadable file, 3 engine/model failure
-(or some segments failed — the output holds what did transcribe), 4 no speech found.
+(or some segments failed — the output holds what did transcribe), 4 no speech found,
+5 no license (official build, trial over; nothing is read).
 With several files every file is attempted and the exit is the most severe of 3, 2, 4.
 """
 
@@ -459,6 +461,15 @@ func runDoctor() -> Never {
     out("\(version)\n")
     line("binary", Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? CommandLine.arguments[0])
     line("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
+    if LicenseBuild.isOfficial {
+        let state = LicenseStore(defaults: UserDefaults(suiteName: LicenseStore.appDefaultsSuite) ?? .standard).load(now: Date())
+        switch LicensePolicy.status(state, now: Date()) {
+        case .trial(let d): line("license", "trial, \(d) day\(d == 1 ? "" : "s") left")
+        case .trialEnded: line("license", "trial ended, no license")
+        case .licensed: line("license", "licensed (\(state.maskedKey))")
+        case .revoked: line("license", "revoked (\(state.revokeReason ?? "?"))")
+        }
+    }
     line("chip", DiagnosticsBundle.chip())
     line("engine setting", "\(s.engine.rawValue) (\(s.engine.engineName))")
     for e in EngineChoice.allCases {
@@ -486,6 +497,21 @@ func runDoctor() -> Never {
     finish(.ok)
 }
 
+// MARK: - license
+
+/// Official build only (`LicenseBuild.isOfficial`): the line to print when the
+/// trial is over and no license is active, else nil. Reads the state the app
+/// keeps; the tool never talks to Gumroad.
+func licenseRefusal() -> String? {
+    guard LicenseBuild.isOfficial else { return nil }
+    let store = LicenseStore(defaults: UserDefaults(suiteName: LicenseStore.appDefaultsSuite) ?? .standard)
+    let status = LicensePolicy.status(store.load(now: Date()), now: Date())
+    if LicensePolicy.allowsUse(status) { return nil }
+    return status == .revoked
+        ? "spiel: license revoked. Enter a license key in Spiel's menu."
+        : "spiel: trial ended. Enter a license key in Spiel's menu."
+}
+
 // MARK: - dispatch
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -500,6 +526,10 @@ case "-h", "--help", "help":
     out(mainHelp + "\n")
     finish(.ok)
 case "transcribe":
+    if !rest.contains("-h") && !rest.contains("--help"), let refusal = licenseRefusal() {
+        err(refusal)
+        finish(.unlicensed)
+    }
     // Detached (top-level code is @MainActor), and the main thread parks in
     // dispatchMain() rather than a semaphore, so nothing that hops to the main
     // queue can deadlock. runTranscribe always ends the process itself.

@@ -21,6 +21,11 @@ let package = Package(
         // The pin plus the committed Package.resolved (which records the commit hash)
         // is what makes a rebuild reproducible. Bump both deliberately.
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.6"),
+        // Auto-updates. EXACT for the same reason: the updater replaces the whole app,
+        // so a silent bump is a silent change to what installs code on his Mac. The
+        // binary target's checksum is in Sparkle's own manifest at this tag. Keep
+        // SPARKLE_VERSION in scripts/release.sh (the signing tools) on the same version.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
         .target(
@@ -32,7 +37,7 @@ let package = Package(
         .executableTarget(name: "SpielTool", dependencies: ["SpielCore"]),
         .executableTarget(
             name: "SpielApp",
-            dependencies: ["SpielCore"],
+            dependencies: ["SpielCore", .product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [
                 .linkedFramework("Carbon"),
                 .linkedFramework("AppKit"),

@@ -1450,6 +1450,7 @@ enum SelfTest {
         listenSourceRules()
         boostSourceRules()
         await tests25()
+        await tests26()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

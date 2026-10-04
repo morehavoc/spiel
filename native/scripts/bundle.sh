@@ -7,6 +7,13 @@
 #   * NSMicrophoneUsageDescription must exist or the mic prompt never appears and
 #     capture fails silently.
 #   * LSUIElement is what makes it a menu-bar app with no dock icon.
+#
+# Day-to-day dev builds: `scripts/bundle.sh` with no environment, as before.
+# scripts/release.sh drives the official build through the same script with:
+#   SPIEL_OFFICIAL_BUILD=1          compile with -DOFFICIAL_BUILD (the license gate)
+#   SPIEL_GUMROAD_PRODUCT_ID=…      Info.plist SpielGumroadProductID
+#   SPIEL_PURCHASE_URL=…            Info.plist SpielPurchaseURL
+#   SPIEL_SKIP_SIGN=1               leave signing to the caller (Developer ID, inside-out)
 set -euo pipefail
 
 CONFIG="${1:-release}"
@@ -20,19 +27,32 @@ VERSION="$(sed -n 's/.*static let short = "\(.*\)".*/\1/p' Sources/SpielCore/Ver
 BUILD="$(sed -n 's/.*static let build = "\(.*\)".*/\1/p' Sources/SpielCore/Version.swift)"
 [ -n "$VERSION" ] && [ -n "$BUILD" ] || { echo "could not read the version from Sources/SpielCore/Version.swift"; exit 1; }
 
-echo "==> swift build -c $CONFIG"
-swift build -c "$CONFIG" --product Spiel
-swift build -c "$CONFIG" --product spiel-tool
+SWIFT_FLAGS=()
+[ "${SPIEL_OFFICIAL_BUILD:-}" = "1" ] && SWIFT_FLAGS=(-Xswiftc -DOFFICIAL_BUILD)
 
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+echo "==> swift build -c $CONFIG ${SWIFT_FLAGS[*]+${SWIFT_FLAGS[*]}}"
+swift build -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} --product Spiel
+swift build -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} --product spiel-tool
+
+BIN_DIR="$(swift build -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} --show-bin-path)"
 BIN="$BIN_DIR/Spiel"
 TOOL="$BIN_DIR/spiel-tool"
 [ -f "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 [ -f "$TOOL" ] || { echo "no binary at $TOOL"; exit 1; }
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/Spiel"
+# Sparkle (auto-updates) is a dynamic framework linked with @rpath; an app bundle
+# looks in Contents/Frameworks. Taken from SwiftPM's checksum-verified artifact, not
+# the bin folder: a `--product` build does not copy it there. ditto keeps the
+# framework's Versions/Current symlinks, which codesign requires.
+SPARKLE_FW="$ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+[ -d "$SPARKLE_FW" ] || { echo "no Sparkle.framework at $SPARKLE_FW (swift package resolve)"; exit 1; }
+ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
+if ! otool -l "$APP/Contents/MacOS/Spiel" | grep -q "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Spiel"
+fi
 # The `spiel` command (menu → Install Command Line Tool… links ~/.local/bin/spiel
 # here). Contents/Helpers, NOT Contents/MacOS: APFS is case-insensitive, so
 # Contents/MacOS/spiel would be the app's own Contents/MacOS/Spiel.
@@ -60,9 +80,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>Spiel records your voice so it can transcribe it to text on this Mac.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Spiel transcribes your speech on-device.</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/morehavoc/spiel/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>Ubolp1jJStMcCdTrSYBTDesGE6c24ENds062AiWuHto=</string>
 </dict>
 </plist>
 PLIST
+# No SUEnableAutomaticChecks on purpose: without it Sparkle asks, once, whether to
+# check automatically. The public key's private half: see RELEASING.md.
+# plutil, not the heredoc, for values from the environment: it escapes & and <.
+[ -n "${SPIEL_GUMROAD_PRODUCT_ID:-}" ] && plutil -insert SpielGumroadProductID -string "$SPIEL_GUMROAD_PRODUCT_ID" "$APP/Contents/Info.plist"
+[ -n "${SPIEL_PURCHASE_URL:-}" ] && plutil -insert SpielPurchaseURL -string "$SPIEL_PURCHASE_URL" "$APP/Contents/Info.plist"
+plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 # Signing identity matters for TCC, not just Gatekeeper. macOS keys an Accessibility /
 # Microphone grant on the app's designated requirement. An AD-HOC signature has no
@@ -79,6 +109,11 @@ PLIST
 # the rotating-identity bug while looking identical.
 SIGN_KEYCHAIN="$HOME/Library/Keychains/spiel-signing.keychain-db"
 SIGN_ID="Spiel Dev Signing"
+if [ "${SPIEL_SKIP_SIGN:-}" = "1" ]; then
+  echo "==> not signed (SPIEL_SKIP_SIGN=1; the caller signs)"
+  echo "==> built $APP ($VERSION build $BUILD)"
+  exit 0
+fi
 if [ -f "$SIGN_KEYCHAIN" ] && security find-certificate -c "$SIGN_ID" "$SIGN_KEYCHAIN" >/dev/null 2>&1; then
   # Password comes from the environment; never hardcode it here. If it is unset we
   # try signing anyway — an unlocked keychain works fine, and a locked one fails

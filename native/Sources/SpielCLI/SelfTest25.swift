@@ -23,7 +23,7 @@ extension SelfTest {
 
     static func toolArgumentTests() {
         print("\n2.5 — spiel arguments and exit codes (the scripting contract)")
-        expect(ToolArguments.Exit.allRaw, "0 1 2 3 4", "exit codes: ok 0, usage 1, unreadable 2, engine 3, no speech 4")
+        expect(ToolArguments.Exit.allRaw, "0 1 2 3 4 5", "exit codes: ok 0, usage 1, unreadable 2, engine 3, no speech 4, unlicensed 5")
 
         func ok(_ a: [String]) -> ToolArguments.Transcribe? {
             if case .success(let o) = ToolArguments.parseTranscribe(a) { return o }
@@ -382,6 +382,6 @@ extension SelfTest {
 
 extension ToolArguments.Exit {
     static var allRaw: String {
-        [ToolArguments.Exit.ok, .usage, .unreadable, .engine, .noSpeech].map { String($0.rawValue) }.joined(separator: " ")
+        [ToolArguments.Exit.ok, .usage, .unreadable, .engine, .noSpeech, .unlicensed].map { String($0.rawValue) }.joined(separator: " ")
     }
 }

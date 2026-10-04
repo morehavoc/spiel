@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import Sparkle
 import SpielCore
 import SwiftUI
 import UserNotifications
@@ -114,6 +115,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reports a file walk for a cached model; that is not a download to show.
     private var modelWasOnDisk = false
 
+    // MARK: 2.6 — license (official build only) and updates
+    private let licenseStore = LicenseStore()
+    /// nil in a source build: there is no gate to keep state for.
+    private var license: LicenseState?
+    private let licenseModel = LicenseModel()
+    private var licenseWindow: NSWindow?
+    private var licenseTimer: Timer?
+    /// Sparkle, standard UI. Feed and public key come from Info.plist (bundle.sh).
+    /// SUEnableAutomaticChecks is deliberately absent, so Sparkle asks once, on the
+    /// second launch, whether to check automatically.
+    private let updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DiagnosticLog.write("launch — Spiel \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") pid \(ProcessInfo.processInfo.processIdentifier)")
         // Two copies of Spiel (an older build left running while a new one is
@@ -137,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        setUpLicense()
         updateStatusItem()
 
         // Permissions are still asked for at LAUNCH, never on the first hotkey press
@@ -399,6 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func start() {
+        guard licenseAllowsStart() else { return }
         guard engineReady, let session else {
             let why = lastError ?? "the speech engine is still loading"
             DiagnosticLog.write("start refused: \(why)")
@@ -683,6 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Listen
 
     private func startListening() {
+        guard licenseAllowsStart() else { return }
         guard engineReady, let session else {
             let why = lastError ?? "the speech engine is still loading"
             DiagnosticLog.write("listen refused: \(why)")
@@ -1082,6 +1098,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cliItem = NSMenuItem(title: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
         cliItem.target = self
         menu.addItem(cliItem)
+        if LicenseBuild.isOfficial {
+            if let state = license, let line = LicensePolicy.menuLine(LicensePolicy.status(state, now: Date())) {
+                let info = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+                info.isEnabled = false
+                menu.addItem(info)
+            }
+            let licenseItem = NSMenuItem(title: "Enter License Key…", action: #selector(showLicenseFromMenu), keyEquivalent: "")
+            licenseItem.target = self
+            menu.addItem(licenseItem)
+        }
+        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+        updateItem.target = updater
+        menu.addItem(updateItem)
         let help = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
         let diag = NSMenuItem(title: "Send Diagnostics…", action: #selector(sendDiagnostics), keyEquivalent: "")
@@ -1850,6 +1879,108 @@ extension AppDelegate {
                 result.informativeText = "\(error)"
                 result.runModal()
             }
+        }
+    }
+}
+
+// MARK: - 2.6 License (official build only)
+
+extension AppDelegate {
+    fileprivate var gumroadProductID: String? {
+        (Bundle.main.object(forInfoDictionaryKey: LicenseBuild.productIDKey) as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+    fileprivate var purchaseURL: URL? {
+        (Bundle.main.object(forInfoDictionaryKey: LicenseBuild.purchaseURLKey) as? String).flatMap(URL.init(string:))
+    }
+
+    fileprivate func setUpLicense() {
+        guard LicenseBuild.isOfficial else { return }
+        let state = licenseStore.load(now: Date())
+        license = state
+        DiagnosticLog.write("license: \(LicensePolicy.status(state, now: Date())), key \(state.maskedKey), product id \(gumroadProductID ?? "MISSING")")
+        licenseModel.canBuy = purchaseURL != nil
+        licenseModel.buy = { [weak self] in
+            if let url = self?.purchaseURL { NSWorkspace.shared.open(url) }
+        }
+        licenseModel.activate = { [weak self] in self?.activateLicense() }
+        // Polled every 6 h; `revalidationDue` holds the actual check to weekly.
+        licenseTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revalidateLicenseIfDue() }
+        }
+        revalidateLicenseIfDue()
+    }
+
+    /// Called only from `start()`/`startListening()`, which run from idle, so a
+    /// dictation or Listen session already running is never cut off — including
+    /// by a revocation that lands mid-session.
+    fileprivate func licenseAllowsStart() -> Bool {
+        guard LicenseBuild.isOfficial, let state = license else { return true }
+        let status = LicensePolicy.status(state, now: Date())
+        if LicensePolicy.allowsUse(status) { return true }
+        DiagnosticLog.write("start refused: license \(status)")
+        showLicense()
+        return false
+    }
+
+    @objc fileprivate func showLicenseFromMenu() { showLicense() }
+
+    fileprivate func showLicense() {
+        refreshLicenseModel()
+        let window = licenseWindow ?? makeWindow(title: "License", view: LicenseView(model: licenseModel),
+                                                 size: NSSize(width: 400, height: 150), autosave: "SpielLicense")
+        licenseWindow = window
+        present(window)
+    }
+
+    fileprivate func refreshLicenseModel() {
+        guard let state = license else { return }
+        licenseModel.status = LicensePolicy.status(state, now: Date())
+        licenseModel.activeKey = state.key == nil ? nil : state.maskedKey
+    }
+
+    fileprivate func saveLicense(_ state: LicenseState) {
+        do { try licenseStore.save(state) } catch { DiagnosticLog.write("license: save FAILED: \(error.localizedDescription)") }
+    }
+
+    fileprivate func activateLicense() {
+        guard let state = license, !licenseModel.working else { return }
+        let key = licenseModel.key
+        let productID = gumroadProductID
+        licenseModel.working = true
+        licenseModel.message = nil
+        Task {
+            let result = await LicensePolicy.activate(key: key, productID: productID, state: state, now: Date()) { k, increment in
+                guard let productID else { return .unavailable("no product id") }
+                return await GumroadClient.verify(productID: productID, key: k, incrementUses: increment)
+            }
+            self.licenseModel.working = false
+            switch result {
+            case .success(let next):
+                self.license = next
+                self.saveLicense(next)
+                self.licenseModel.key = ""
+                DiagnosticLog.write("license activated: \(next.maskedKey)")
+            case .failure(let error):
+                self.licenseModel.message = error.message
+                DiagnosticLog.write("license activation failed: \(error)")
+            }
+            self.refreshLicenseModel()
+            self.updateStatusItem()
+        }
+    }
+
+    fileprivate func revalidateLicenseIfDue() {
+        guard let state = license, let key = state.key, let productID = gumroadProductID,
+              LicensePolicy.revalidationDue(state, now: Date()) else { return }
+        Task {
+            let verdict = await GumroadClient.verify(productID: productID, key: key, incrementUses: false)
+            // Fold into the CURRENT state: an activation may have landed meanwhile.
+            guard let current = self.license, current.key == key else { return }
+            let next = LicensePolicy.applyRevalidation(current, verdict, now: Date())
+            self.license = next
+            self.saveLicense(next)
+            DiagnosticLog.write("license re-check: \(verdict) → strikes \(next.revokeStrikes)\(next.revoked ? ", REVOKED" : "")")
+            self.refreshLicenseModel()
         }
     }
 }
