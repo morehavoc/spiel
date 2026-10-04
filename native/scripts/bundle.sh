@@ -60,6 +60,8 @@ cp "$TOOL" "$APP/Contents/Helpers/spiel"
 # App icon (Finder, /Applications, Login Items, notifications — it is a menu-bar app,
 # so there is no Dock tile). Regenerate with scripts/make-icon.py + iconutil.
 cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# Shown by the standard About panel (Help → About Spiel).
+cp "$ROOT/assets/Credits.html" "$APP/Contents/Resources/Credits.html"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -76,6 +78,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSHumanReadableCopyright</key><string>© 2025–2026 Christopher Moravec</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Spiel records your voice so it can transcribe it to text on this Mac.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

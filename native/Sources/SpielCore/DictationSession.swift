@@ -158,6 +158,16 @@ public actor DictationSession {
             }
             return "\(segments) segment\(segments == 1 ? "" : "s") captured (peak \(String(format: "%.2f", peak))) but the engine returned no words"
         }
+
+        /// The same verdict as `diagnosis` for an empty result, in words for a
+        /// notification. `diagnosis` keeps the numbers for the log.
+        public var userMessage: String {
+            if audioSeconds == 0 { return "No audio came from the microphone." }
+            if peak < 0.005 { return "Only silence. Check that the right microphone is selected and not muted." }
+            if segments == 0 { return "No speech heard." }
+            if !errors.isEmpty { return "Speech recognition failed. Try again." }
+            return "No words recognized."
+        }
     }
 
     private let config: Config

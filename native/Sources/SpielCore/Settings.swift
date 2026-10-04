@@ -8,8 +8,8 @@ public enum DictationMode: String, CaseIterable, Sendable {
     case toggle, hold
     public var label: String {
         switch self {
-        case .toggle: return "Press to start, press again to stop"
-        case .hold: return "Hold to talk, release to stop"
+        case .toggle: return "Press to start and stop"
+        case .hold: return "Hold to talk"
         }
     }
 }
@@ -20,9 +20,9 @@ public enum EngineChoice: String, CaseIterable, Sendable {
     case unified, v3, apple
     public var label: String {
         switch self {
-        case .unified: return "Parakeet Unified EN (default, most accurate)"
-        case .v3: return "Parakeet TDT v3 (multilingual)"
-        case .apple: return "Apple SpeechAnalyzer (macOS 26+)"
+        case .unified: return "Parakeet Unified (English)"
+        case .v3: return "Parakeet v3 (25 languages)"
+        case .apple: return "Apple (macOS 26 and later)"
         }
     }
     /// The name written into transcripts and diagnostics.

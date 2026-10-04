@@ -61,9 +61,6 @@ struct SetupView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Set up Spiel").font(.title).bold()
-                Text("Spiel turns your speech into text in any app, entirely on this Mac. Each step ticks itself off as soon as it is done. You can close this window at any time and reopen it with Setup… in the Spiel menu.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.bottom, 14)
 
@@ -82,10 +79,8 @@ struct SetupView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
 
             HStack {
-                Text(model.remaining == 0 ? "All set." : "\(model.remaining) step\(model.remaining == 1 ? "" : "s") left — Spiel still works for whatever is done.")
-                    .font(.callout).foregroundStyle(.secondary)
                 Spacer()
-                Button(model.remaining == 0 ? "Done" : "Finish Later") { model.done() }
+                Button(model.remaining == 0 ? "Done" : "Later") { model.done() }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 14)
@@ -116,18 +111,17 @@ struct SetupView: View {
     }
     private var microphoneDetail: String {
         switch model.microphone {
-        case .authorized: return "Allowed. Audio is transcribed on this Mac and never recorded to disk."
-        case .notDetermined: return "So Spiel can hear you. Audio is transcribed on this Mac and never leaves it."
-        case .denied: return "Microphone access is off, so dictation cannot hear anything. Turn Spiel on under Privacy & Security → Microphone."
-        case .restricted: return "Microphone access is restricted on this Mac (a profile or parental control) — Spiel cannot change that."
+        case .authorized, .notDetermined: return ""
+        case .denied: return "Turn Spiel on in Privacy & Security → Microphone."
+        case .restricted: return "Blocked by a profile on this Mac."
         }
     }
 
     private var accessibilityRow: some View {
         StepRow(number: 2, title: "Accessibility", status: model.accessibility ? .done : .todo,
                 detail: model.accessibility
-                    ? "Allowed. Dictated text is typed straight into the app you are using."
-                    : "So Spiel can type the text into other apps. Without it the text lands on the clipboard and you paste it yourself. Turn Spiel on in the list that opens — this step ticks itself within a second. If Spiel is already on there but this stays unticked, that entry belongs to an older copy: remove it with − and add it again.") {
+                    ? ""
+                    : "Lets Spiel type into other apps. If Spiel is already on in the list, remove it with − and add it again.") {
             if !model.accessibility {
                 Button("Open Accessibility Settings") { model.requestAccessibility() }
             }
@@ -143,9 +137,9 @@ struct SetupView: View {
             }
         }(), detail: {
             switch model.notifications {
-            case .allowed: return "Allowed. Spiel only notifies when something needs you."
-            case .notDetermined: return "So Spiel can tell you when something goes wrong — a shortcut another app took, a microphone that stopped."
-            case .denied: return "Off. Spiel still works, but problems only show in its menu. You can turn them on in System Settings → Notifications."
+            case .allowed: return ""
+            case .notDetermined: return "Only used when something goes wrong."
+            case .denied: return "Off. Problems show in the Spiel menu instead."
             }
         }()) {
             switch model.notifications {
@@ -156,7 +150,7 @@ struct SetupView: View {
         }
     }
 
-    private var modelTitle: String { "Speech model — \(SpeechModels.displayName(model.engine))" }
+    private var modelTitle: String { "Speech model" }
 
     private var modelRow: some View {
         StepRow(number: 4, title: modelTitle, status: modelStatus, detail: modelDetail) {
@@ -179,21 +173,19 @@ struct SetupView: View {
     }
 
     private var sizeNote: String {
-        SpeechModels.approximateMB(model.engine).map { "about \($0) MB, downloaded once from Hugging Face and kept on this Mac" }
-            ?? "managed by macOS, downloaded by the system the first time it is used"
+        SpeechModels.approximateMB(model.engine).map { "about \($0) MB" } ?? "provided by macOS"
     }
 
     private var modelDetail: String {
         switch model.model {
-        case .checking: return "Looking for the model (\(sizeNote))…"
-        case .downloading: return "Downloading — \(sizeNote). Spiel keeps working on other steps meanwhile."
-        case .compiling: return "On this Mac (\(sizeNote.hasPrefix("about") ? "downloaded" : "managed by macOS")). Loading it onto the Neural Engine — the first time after a download takes longest."
-        case .ready(let engine, let bytes):
-            return "Ready — \(engine)\(bytes > 0 ? ", \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) on disk" : ""). Nothing leaves this Mac when you dictate."
+        case .checking: return "Checking…"
+        case .downloading: return "Downloading \(SpeechModels.displayName(model.engine)), \(sizeNote)."
+        case .compiling: return "Preparing. The first time can take a minute."
+        case .ready(let engine, _): return engine
         case .fallback(let using, let error):
-            return "\(SpeechModels.displayName(model.engine)) could not load, so Spiel is using \(using) for now. Check the internet connection, then Retry.\nError: \(error)"
+            return "\(SpeechModels.displayName(model.engine)) didn't load. Using \(using).\n\(error)"
         case .failed(let error):
-            return "Download failed — check the internet connection, then Retry. No speech engine is loaded, so dictation cannot work yet.\nError: \(error)"
+            return "Download failed. Check your connection.\n\(error)"
         }
     }
 
@@ -225,10 +217,10 @@ struct SetupView: View {
         StepRow(number: 5, title: "Try it", status: .info, detail: tryItText) { EmptyView() }
     }
     private var tryItText: String {
-        if let problem = model.shortcutProblem { return "The dictation shortcut is not active: \(problem). Pick another in Settings." }
+        if let problem = model.shortcutProblem { return "\(model.shortcut) isn't working: \(problem). Change it in Settings." }
         switch model.mode {
-        case .toggle: return "Click into any text field, press \(model.shortcut), say something, then press \(model.shortcut) again. The text appears where your cursor is."
-        case .hold: return "Click into any text field, hold \(model.shortcut) while you talk, and let go. The text appears where your cursor is."
+        case .toggle: return "Press \(model.shortcut), talk, press it again."
+        case .hold: return "Hold \(model.shortcut) and talk."
         }
     }
 }
@@ -255,11 +247,13 @@ private struct StepRow<Action: View, Extra: View>: View {
             mark.frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.headline)
+                if !detail.isEmpty {
                 Text(detail)
                     .font(.callout)
                     .foregroundStyle(status == .problem ? Color.red : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                }
                 extra()
             }
             Spacer(minLength: 8)

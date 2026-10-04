@@ -443,7 +443,7 @@ enum SelfTest {
         expect(AudioCapture.resolve(preferredUID: "yeti-uid", devices: [yeti]) == .device(yeti) ? "yeti" : "other", "yeti",
                "a connected pick is used")
         let missing = AudioCapture.resolve(preferredUID: "yeti-uid", preferredName: "Yeti", devices: [])
-        expect(missing.note ?? "no note", "Yeti is not connected — using the system default input",
+        expect(missing.note ?? "no note", "Yeti isn't connected. Using the system default.",
                "an unplugged pick falls back to the default AND says so by name")
         expect(AudioCapture.resolve(preferredUID: "yeti-uid", devices: [yeti]).note == nil ? "quiet" : "noted", "quiet",
                "a connected pick carries no fallback note")
@@ -733,7 +733,7 @@ enum SelfTest {
         expect(listen.contains("WindowTitle.frontmost()") ? "ok" : "missing", "ok",
                "startListening() pre-fills the title from the frontmost window")
         guard let toggle = body(of: "toggle") else { expect("missing", "found", "toggle() exists"); return }
-        expect(toggle.contains("case .recording(.listen), .paused:") && toggle.contains("stop it to dictate") ? "ok" : "missing", "ok",
+        expect(toggle.contains("case .recording(.listen), .paused:") && toggle.contains("Stop Listen to dictate") ? "ok" : "missing", "ok",
                "⌘⇧D during Listen is refused with a reason, not multiplexed (§5.1)")
         expect(src.contains("case .paused:\n            symbol = \"pause.circle\"") || src.contains("symbol = \"pause.circle\"") ? "ok" : "missing", "ok",
                "paused Listen has its own status symbol")
@@ -1401,8 +1401,8 @@ enum SelfTest {
 
             expect(LaunchAtLogin.locationNote(bundlePath: "/Applications/Spiel.app") ?? "nil", "nil",
                    "no location warning for /Applications")
-            expect(LaunchAtLogin.locationNote(bundlePath: "/Users/x/Downloads/Spiel.app")?.contains("Downloads") == true ? "ok" : "missing",
-                   "ok", "living in Downloads is called out by name — the next build replaces it")
+            expect(LaunchAtLogin.locationNote(bundlePath: "/Users/x/Downloads/Spiel.app")?.contains("Applications") == true ? "ok" : "missing",
+                   "ok", "living in Downloads gets the move-to-Applications note")
             expect(LaunchAtLogin.locationNote(bundlePath: "/Users/x/Desktop/Spiel.app") == nil ? "nil" : "warned",
                    "warned", "any location outside /Applications gets a warning")
 

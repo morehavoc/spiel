@@ -1,12 +1,12 @@
-# Spiel v2 — native
+# Spiel — developer notes
 
-A ground-up Swift rewrite of Spiel's engine, living alongside the original Electron
-app on the `v2-native` branch. Nothing in `electron/` or `src/` was touched.
+The native Swift app. For what Spiel is and how to get it, see the
+[top-level README](../README.md). Releasing: [RELEASING.md](RELEASING.md).
 
 ## What it looks like
 
 Press ⌘⇧D, talk, press it again. The text lands in whatever had focus. (Prefer
-hold-to-talk? Settings → Dictation shortcut.)
+hold-to-talk? Settings → Dictation.)
 
 ![Spiel v2 listening panel — hold the hotkey, the menu bar mic goes orange, the panel shows the live waveform and the transcript as each segment lands](docs/media/spiel-v2-demo.gif)
 
@@ -30,9 +30,9 @@ error and a Retry), and a "Try it" line with the current shortcut. It replaces t
 launch-time permission prompts rather than adding to them; close it early and
 whatever is still unanswered is asked then, before any dictation. An upgrade that
 already has mic + Accessibility + an answered notification prompt + the model on disk
-never sees it. Reopen any time: menu → **Setup…**.
+never sees it. Reopen any time: Help → **Setup…**.
 
-**`spiel` command.** Menu → **Install Command Line Tool…** links
+**`spiel` command.** Help → **Install Command Line Tool…** links
 `~/.local/bin/spiel` to `Spiel.app/Contents/Helpers/spiel` (no sudo; `/usr/local/bin`
 is offered only if it is writable and `~/.local/bin` is not on your PATH; an existing
 file that is not a Spiel link is never overwritten). It uses the app's model cache,
@@ -86,16 +86,15 @@ built-ins), `-q` quiet.
   standards (⌘Q, ⌘C, ⌘V…) and the other hotkey's combo are refused with the reason
   under the field; a combo Carbon will not register is refused with its reason and
   the previous one stays. Global hotkeys are released while a field is recording, so
-  ⌘⇧D reaches the field instead of starting a dictation. "Try F5 instead" in the menu
-  now saves F5 as the shortcut. Dictation mode: press-to-toggle (the default, and what
+  ⌘⇧D reaches the field instead of starting a dictation. "Use F5 Instead" in the menu
+  saves F5 as the shortcut. Dictation mode: press-to-toggle (the default, and what
   every earlier build did) or hold-to-talk. Microphone: system default or a named
   input; a picked device that is unplugged falls back to the default and the menu
-  says so (`⚠︎ Mic: Yeti is not connected — using the system default input`). Engine:
+  says so (`⚠︎ Yeti isn't connected. Using the system default.`). Engine:
   Unified (default) / v3 / Apple, switched live (deferred to the end of a running
   session), falling back through the others as before. History on/off, Open at Login,
   Diagnostic Logging.
 - **Vocabulary** — edits `vocabulary.txt` in place (Save ⌘S, Revert, Show in Finder).
-  Menu → Edit Vocabulary… opens this tab.
 
 **History…** keeps the last 50 dictations that produced text — inserted or not, since
 a failed insert is exactly when you want it back — with time, target app and word

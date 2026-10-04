@@ -97,7 +97,7 @@ public final class AudioCapture: @unchecked Sendable {
         case missing(uid: String, name: String)
 
         public var note: String? {
-            if case .missing(_, let name) = self { return "\(name) is not connected — using the system default input" }
+            if case .missing(_, let name) = self { return "\(name) isn't connected. Using the system default." }
             return nil
         }
     }

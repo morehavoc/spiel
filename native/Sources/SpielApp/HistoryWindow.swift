@@ -57,12 +57,12 @@ struct HistoryView: View {
             .padding(10)
             Divider()
             if !model.enabled && model.history.entries.isEmpty {
-                empty("History is off", "Turn it on in Settings → History to keep your last \(DictationHistory.cap) dictations.",
+                empty("History is off", "",
                       action: ("Open Settings", model.onOpenSettings))
             } else if model.history.entries.isEmpty {
-                empty("No dictations yet", model.note ?? "Each dictation that produces text is kept here, newest first.", action: nil)
+                empty("No dictations yet", model.note ?? "", action: nil)
             } else if model.visible.isEmpty {
-                empty("No matches", "Nothing in the last \(model.history.entries.count) dictations matches “\(model.query)”.", action: nil)
+                empty("No matches", "", action: nil)
             } else {
                 List(model.visible, selection: $model.selection) { e in
                     row(e).tag(e.id)
@@ -90,13 +90,12 @@ struct HistoryView: View {
             Button("Clear", role: .destructive) { model.onClear() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes the \(model.history.entries.count) saved dictations from this Mac.")
+            Text("\(model.history.entries.count) dictations will be deleted.")
         }
     }
 
     private var footer: String {
-        if !model.enabled { return "History is off — nothing new is being saved" }
-        return "Double-click or Copy puts the text on the clipboard"
+        model.enabled ? "" : "History is off"
     }
 
     private func row(_ e: DictationHistory.Entry) -> some View {
@@ -123,7 +122,7 @@ struct HistoryView: View {
         VStack(spacing: 8) {
             Spacer()
             Text(title).font(.title3).fontWeight(.semibold)
-            Text(body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
+            if !body.isEmpty { Text(body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380) }
             if let action { Button(action.0, action: action.1) }
             Spacer()
         }

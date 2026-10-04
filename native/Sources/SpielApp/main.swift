@@ -138,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
             if !others.isEmpty {
                 let pids = others.map { "\($0.processIdentifier)" }.joined(separator: ", ")
-                let msg = "another copy of Spiel is already running (pid \(pids)) — quit it from its menu-bar icon, or the hotkey will belong to whichever started first"
+                let msg = "another copy of Spiel is running (pid \(pids)). Quit one of them."
                 DiagnosticLog.write("WARNING: \(msg)")
                 lastError = msg
                 Notifier.post(title: "Two copies of Spiel are running", body: msg)
@@ -182,8 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Not a console log. A dead hotkey must be visible.
                 if case .failed(let desc, let reason) = status, !self.quietHotkeyFailures {
                     Notifier.post(
-                        title: "Spiel hotkey is not active",
-                        body: "\(desc) could not be registered: \(reason). Pick a different shortcut from the Spiel menu."
+                        title: "\(desc) isn't working",
+                        body: "\(reason). Change the shortcut in Settings."
                     )
                 }
                 self.updateStatusItem()
@@ -374,9 +374,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             listenPanel.setDocument(doc)
             consecutiveFailures += 1
             if consecutiveFailures == 3 {
-                let msg = "the speech engine failed 3 segments in a row — it may be wedged; stop and restart Listen (the transcript so far is saved)"
+                let msg = "Speech recognition failed 3 times in a row. Stop and restart Listen. The transcript so far is saved."
                 DiagnosticLog.write("LISTEN: \(msg)")
-                Notifier.post(title: "Spiel Listen is losing speech", body: msg)
+                Notifier.post(title: "Listen is missing speech", body: msg)
             }
             saveListen()
         }
@@ -392,9 +392,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // One AudioCapture, one session: dictation during Listen is refused
             // with a reason, not multiplexed (design §5.1).
             let mins = listenStartedAt.map { Int(Date().timeIntervalSince($0) / 60) } ?? 0
-            let msg = "Listen is running (\(mins) min) — stop it to dictate"
+            let msg = "Stop Listen to dictate. It has been running \(mins) min."
             DiagnosticLog.write("dictation refused: \(msg)")
-            Notifier.post(title: "Spiel is listening", body: msg)
+            Notifier.post(title: "Listen is on", body: msg)
         case .starting, .finishing:
             DiagnosticLog.write("hotkey ignored: \(phase)")
         }
@@ -406,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .recording(.listen), .paused: stopListening()
         case .recording(.dictation):
             DiagnosticLog.write("listen refused: dictation in progress")
-            Notifier.post(title: "Spiel is dictating", body: "Finish the dictation (⌘⇧D) before starting Listen")
+            Notifier.post(title: "Spiel is dictating", body: "Finish dictating before starting Listen.")
         case .starting, .finishing:
             DiagnosticLog.write("listen hotkey ignored: \(phase)")
         }
@@ -415,7 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func start() {
         guard licenseAllowsStart() else { return }
         guard engineReady, let session else {
-            let why = lastError ?? "the speech engine is still loading"
+            let why = lastError ?? "The speech model is still loading."
             DiagnosticLog.write("start refused: \(why)")
             Notifier.post(title: "Spiel is not ready", body: why)
             return
@@ -586,7 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.listenPanel.setDocument(doc)
                     self.saveListen()
                     Notifier.post(title: "Spiel Listen stopped",
-                                  body: "input device changed and could not restart (\(outcome)). The transcript so far is saved.")
+                                  body: "The microphone changed and couldn't restart. The transcript so far is saved.")
                     self.stopListening()
                 } else {
                     doc.noteCaptureRestart(device: outcome, atOffset: at)
@@ -601,11 +601,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func micDenied() {
-        let msg = "Microphone access is denied. System Settings → Privacy & Security → Microphone → enable Spiel."
+        let msg = "Turn Spiel on in Privacy & Security → Microphone."
         DiagnosticLog.write("start refused: microphone denied")
         phase = .idle
         lastOutcome = msg
-        Notifier.post(title: "Spiel cannot hear you", body: msg)
+        Notifier.post(title: "Spiel can't use the microphone", body: msg)
         updateStatusItem()
     }
 
@@ -669,17 +669,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let msg: String
                 switch mode {
                 case .dictation:
-                    msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; that dictation is lost"
+                    msg = "Speech recognition stopped responding and is restarting. That dictation was lost."
                     self.panel.hide()
                     self.lastOutcome = msg
                 case .listen:
                     let upTo = self.listenDoc?.paragraphs.last.map { TranscriptDocument.formatOffset($0.offset) } ?? "00:00"
-                    msg = "the speech engine did not return within \(Self.finishWatchdogSeconds)s — reloading it; the transcript is saved up to \(upTo)"
+                    msg = "Speech recognition stopped responding and is restarting. The transcript is saved up to \(upTo)."
                     self.listenEndedAt = Date()
                     self.saveListen()
                     self.listenCounter?.invalidate(); self.listenCounter = nil
                     self.lastSession = "saved up to \(upTo), engine hung"
-                    self.listenPanel.setDone(summary: "saved up to \(upTo) · engine hung", document: self.listenDoc ?? TranscriptDocument())
+                    self.listenPanel.setDone(summary: "Saved up to \(upTo)", document: self.listenDoc ?? TranscriptDocument())
                 }
                 DiagnosticLog.write("WATCHDOG: \(msg)")
                 self.phase = .idle
@@ -689,7 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.session = nil
                 self.engineReady = false
                 self.updateStatusItem()
-                Notifier.post(title: "Spiel got stuck finishing", body: msg)
+                Notifier.post(title: "Spiel got stuck", body: msg)
                 Task { await self.warmUp() }
             }
         }
@@ -700,7 +700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startListening() {
         guard licenseAllowsStart() else { return }
         guard engineReady, let session else {
-            let why = lastError ?? "the speech engine is still loading"
+            let why = lastError ?? "The speech model is still loading."
             DiagnosticLog.write("listen refused: \(why)")
             Notifier.post(title: "Spiel is not ready", body: why)
             return
@@ -836,7 +836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let words = doc.wordCount
         let file = listenURL?.lastPathComponent ?? "(not saved — \(lastError ?? "unknown error"))"
         var summary = "\(mins) min · \(words.formatted()) words · saved"
-        if listenURL == nil { summary = "\(mins) min · \(words.formatted()) words · NOT SAVED" }
+        if listenURL == nil { summary = "\(mins) min · \(words.formatted()) words · not saved" }
         if !report.errors.isEmpty { summary += " · \(report.errors.count) missed" }
         lastSession = "\(mins) min, \(words.formatted()) words, \(listenURL == nil ? "NOT saved" : "saved to \(file)")"
         DiagnosticLog.write("listen finished: \(lastSession!) (\(report.diagnosis); restarts \(report.captureRestarts), paused \(Int(report.pausedSeconds)) s)")
@@ -895,7 +895,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let why = report.diagnosis
             lastOutcome = "nothing inserted — \(why)"
             DiagnosticLog.write("finish: no text — \(why)")
-            Notifier.post(title: "Spiel heard nothing usable", body: why)
+            Notifier.post(title: "Nothing to insert", body: report.userMessage)
             updateStatusItem()
             return
         }
@@ -906,7 +906,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastOutcome = "inserted \(report.text.split(separator: " ").count) words into \(target) via \(outcome.method.rawValue) (\(report.diagnosis))" + (outcome.detail.map { " — \($0)" } ?? "")
             DiagnosticLog.write("finish: \(lastOutcome!) — \(quotedForLog(report.text))", sensitive: true)
         } else {
-            let why = outcome.detail ?? "unknown reason — the text is on your clipboard"
+            let why = outcome.detail ?? "The text is on the clipboard."
             lastOutcome = "could not insert into \(target): \(why)"
             DiagnosticLog.write(
                 "finish: INSERT FAILED into \(target): \(why) — text: \(quotedForLog(report.text))",
@@ -944,182 +944,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        switch hotkeyStatus {
-        case .registered(let desc):
-            menu.addItem(withTitle: "Hotkey: \(desc)\(settings.dictationMode == .hold ? " (hold to talk)" : "")", action: nil, keyEquivalent: "")
-        case .failed(let desc, let reason):
-            let item = NSMenuItem(
-                title: "⚠︎ Hotkey \(desc) NOT active — \(reason)",
-                action: #selector(retryHotkey), keyEquivalent: ""
-            )
-            item.target = self
+        func add(_ title: String, _ action: Selector? = nil, target: AnyObject? = nil, key: String = "") -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = target ?? self
             menu.addItem(item)
-            let alt = NSMenuItem(title: "Try F5 instead", action: #selector(useF5), keyEquivalent: "")
-            alt.target = self
-            menu.addItem(alt)
-        case .unregistered:
-            menu.addItem(withTitle: "Hotkey: not registered", action: nil, keyEquivalent: "")
+            return item
         }
-        switch listenHotkeyStatus {
-        case .registered(let desc):
-            menu.addItem(withTitle: "Listen: \(desc)", action: nil, keyEquivalent: "")
-        case .failed(let desc, let reason):
-            let item = NSMenuItem(
-                title: "⚠︎ Listen hotkey \(desc) NOT active — \(reason)",
-                action: #selector(retryListenHotkey), keyEquivalent: ""
-            )
-            item.target = self
-            menu.addItem(item)
-        case .unregistered:
-            menu.addItem(withTitle: "Listen: not registered", action: nil, keyEquivalent: "")
+        func shortcut(_ status: HotkeyManager.Status) -> String {
+            if case .registered(let d) = status { return " (\(d))" }
+            return ""
         }
 
-        menu.addItem(.separator())
-        menu.addItem(withTitle: engineReady ? "Engine: ready" : "Engine: loading…",
-                     action: nil, keyEquivalent: "")
+        // Actions first.
+        _ = add((isDictating ? "Stop Dictation" : "Start Dictation") + shortcut(hotkeyStatus), #selector(menuToggle))
+        switch phase {
+        case .recording(.listen):
+            _ = add("Pause Listening", #selector(menuPauseListen))
+            _ = add("Stop Listening" + shortcut(listenHotkeyStatus), #selector(menuToggleListen))
+        case .paused:
+            _ = add("Resume Listening", #selector(menuResumeListen))
+            _ = add("Stop Listening" + shortcut(listenHotkeyStatus), #selector(menuToggleListen))
+        default:
+            _ = add("Start Listening" + shortcut(listenHotkeyStatus), #selector(menuToggleListen))
+        }
+
+        // Problems, only when there is one.
+        var problems: [NSMenuItem] = []
+        if case .failed(let desc, let reason) = hotkeyStatus {
+            let item = NSMenuItem(title: "⚠︎ \(desc) isn't working: \(reason)", action: #selector(retryHotkey), keyEquivalent: "")
+            item.target = self
+            problems.append(item)
+            let alt = NSMenuItem(title: "Use F5 Instead", action: #selector(useF5), keyEquivalent: "")
+            alt.target = self
+            problems.append(alt)
+        }
+        if case .failed(let desc, let reason) = listenHotkeyStatus {
+            let item = NSMenuItem(title: "⚠︎ \(desc) isn't working: \(reason)", action: #selector(retryListenHotkey), keyEquivalent: "")
+            item.target = self
+            problems.append(item)
+        }
+        if !engineReady {
+            problems.append(NSMenuItem(title: "Loading speech model…", action: nil, keyEquivalent: ""))
+        }
         let mic = AudioCapture.resolve(preferredUID: settings.microphone?.uid, preferredName: settings.microphone?.name,
                                        devices: AudioCapture.inputDevices())
         if let note = mic.note {
-            menu.addItem(withTitle: "⚠︎ Mic: \(note) (\(AudioCapture.defaultInputDeviceName()))", action: nil, keyEquivalent: "")
-        } else {
-            menu.addItem(withTitle: "Mic: \(inputDeviceLabel()) — \(AudioCapture.microphoneAuthorization().rawValue)",
-                         action: nil, keyEquivalent: "")
+            problems.append(NSMenuItem(title: "⚠︎ \(note.prefix(1).uppercased() + note.dropFirst())", action: nil, keyEquivalent: ""))
         }
         if TextInserter.isSecureInputEnabled() {
-            let holder = secureInputHolderCached().map { " (held by \($0))" } ?? " (identifying holder…)"
-            menu.addItem(withTitle: "⚠︎ Secure Input active\(holder) — ⌘V paste is blocked",
-                         action: nil, keyEquivalent: "")
-            menu.addItem(withTitle: "    Text still goes to the clipboard; Accessibility insert is tried first",
-                         action: nil, keyEquivalent: "")
+            let holder = secureInputHolderCached().map { " (\($0))" } ?? ""
+            problems.append(NSMenuItem(title: Self.secureInputTitle(holder), action: nil, keyEquivalent: ""))
         }
         if !TextInserter.hasAccessibilityPermission() {
-            let item = NSMenuItem(title: "⚠︎ Accessibility NOT effective — click to prompt",
-                                  action: #selector(grantAccessibility), keyEquivalent: "")
+            let item = NSMenuItem(title: "⚠︎ Allow Accessibility…", action: #selector(grantAccessibility), keyEquivalent: "")
             item.target = self
-            menu.addItem(item)
-            menu.addItem(withTitle: "    If Spiel is already ON in that list, remove it (−) and re-add — the entry belongs to an older build",
-                         action: nil, keyEquivalent: "")
+            problems.append(item)
         }
         if let lastError {
-            menu.addItem(withTitle: "Last error: \(lastError)", action: nil, keyEquivalent: "")
+            problems.append(NSMenuItem(title: "⚠︎ " + lastError.prefix(1).uppercased() + lastError.dropFirst(), action: nil, keyEquivalent: ""))
         }
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Last dictation: \(lastOutcome ?? "none yet")", action: nil, keyEquivalent: "")
-        menu.addItem(withTitle: "Last session: \(lastSession ?? "none yet")", action: nil, keyEquivalent: "")
-        let folderItem = NSMenuItem(title: "Open Transcripts Folder", action: #selector(openTranscriptsFolder), keyEquivalent: "")
-        folderItem.target = self
-        menu.addItem(folderItem)
-        let vocabItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
-        vocabItem.target = self
-        menu.addItem(vocabItem)
-        let historyItem = NSMenuItem(title: "History…", action: #selector(showHistory), keyEquivalent: "")
-        historyItem.target = self
-        menu.addItem(historyItem)
-        let copyLast = NSMenuItem(title: lastDictationText == nil ? "Copy Last Dictation (none yet)" : "Copy Last Dictation",
-                                  action: lastDictationText == nil ? nil : #selector(copyLastDictation), keyEquivalent: "")
-        copyLast.target = self
-        menu.addItem(copyLast)
-        // Off by default: the log holds every transcript verbatim, so it is only
-        // written once the user asks for it. The checkmark IS the persisted state.
-        let loggingItem = NSMenuItem(title: "Diagnostic Logging", action: #selector(toggleLogging), keyEquivalent: "")
-        loggingItem.target = self
-        loggingItem.state = DiagnosticLog.isEnabled ? .on : .off
-        menu.addItem(loggingItem)
-        let logExists = FileManager.default.fileExists(atPath: DiagnosticLog.url.path)
-        let logItem = NSMenuItem(
-            title: logExists ? "Open Log…" : "Open Log… (nothing written yet)",
-            action: logExists ? #selector(openLog) : nil, keyEquivalent: ""
-        )
-        logItem.target = self
-        menu.addItem(logItem)
-
-        // The checkmark is read from macOS on every menu open, never from a stored
-        // preference — a login item the user switched off in System Settings would
-        // otherwise keep showing a tick while Spiel never launched.
-        let launchState = LaunchAtLogin.state()
-        let launchItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        launchItem.target = self
-        launchItem.state = launchState.isChecked ? .on : .off
-        switch launchState {
-        case .on, .off:
-            if launchState.isChecked, let note = LaunchAtLogin.locationNote(bundlePath: Bundle.main.bundleURL.path) {
-                menu.addItem(launchItem)
-                menu.addItem(withTitle: "    \(note)", action: nil, keyEquivalent: "")
-            } else {
-                menu.addItem(launchItem)
-            }
-        case .requiresApproval:
-            launchItem.title = "⚠︎ Open at Login is blocked in System Settings"
-            launchItem.action = #selector(openLoginItemsSettings)
-            menu.addItem(launchItem)
-            menu.addItem(withTitle: "    Click to open Login Items — only you can switch it back on there",
-                         action: nil, keyEquivalent: "")
-        case .unavailable(let why):
-            launchItem.title = "Open at Login — unavailable"
-            launchItem.action = nil
-            menu.addItem(launchItem)
-            menu.addItem(withTitle: "    \(why)", action: nil, keyEquivalent: "")
+        if !problems.isEmpty {
+            menu.addItem(.separator())
+            problems.forEach(menu.addItem)
         }
 
         menu.addItem(.separator())
-        let toggleItem = NSMenuItem(
-            title: isDictating ? "Stop Dictation" : "Start Dictation",
-            action: #selector(menuToggle), keyEquivalent: ""
-        )
-        toggleItem.target = self
-        menu.addItem(toggleItem)
-        switch phase {
-        case .recording(.listen):
-            let pauseItem = NSMenuItem(title: "Pause Listening", action: #selector(menuPauseListen), keyEquivalent: "")
-            pauseItem.target = self
-            menu.addItem(pauseItem)
-            let stopItem = NSMenuItem(title: "Stop Listening", action: #selector(menuToggleListen), keyEquivalent: "")
-            stopItem.target = self
-            menu.addItem(stopItem)
-        case .paused:
-            let resumeItem = NSMenuItem(title: "Resume Listening", action: #selector(menuResumeListen), keyEquivalent: "")
-            resumeItem.target = self
-            menu.addItem(resumeItem)
-            let stopItem = NSMenuItem(title: "Stop Listening", action: #selector(menuToggleListen), keyEquivalent: "")
-            stopItem.target = self
-            menu.addItem(stopItem)
-        default:
-            let listenItem = NSMenuItem(title: "Start Listening", action: #selector(menuToggleListen), keyEquivalent: "")
-            listenItem.target = self
-            menu.addItem(listenItem)
-        }
+        let copyLast = add("Copy Last Dictation", lastDictationText == nil ? nil : #selector(copyLastDictation))
+        copyLast.isEnabled = lastDictationText != nil
+        _ = add("History…", #selector(showHistory))
+        _ = add("Open Transcripts Folder", #selector(openTranscriptsFolder))
+
         menu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-        let setupItem = NSMenuItem(title: "Setup…", action: #selector(showSetupFromMenu), keyEquivalent: "")
-        setupItem.target = self
-        menu.addItem(setupItem)
-        let cliItem = NSMenuItem(title: "Install Command Line Tool…", action: #selector(installCommandLineTool), keyEquivalent: "")
-        cliItem.target = self
-        menu.addItem(cliItem)
+        _ = add("Settings…", #selector(showSettings), key: ",")
         if LicenseBuild.isOfficial {
             if let state = license, let line = LicensePolicy.menuLine(LicensePolicy.status(state, now: Date())) {
-                let info = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-                info.isEnabled = false
-                menu.addItem(info)
+                add(line).isEnabled = false
             }
-            let licenseItem = NSMenuItem(title: "Enter License Key…", action: #selector(showLicenseFromMenu), keyEquivalent: "")
-            licenseItem.target = self
-            menu.addItem(licenseItem)
+            _ = add("Enter License Key…", #selector(showLicenseFromMenu))
         }
-        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
-        updateItem.target = updater
-        menu.addItem(updateItem)
+        _ = add("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)), target: updater)
+
         let help = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
-        let diag = NSMenuItem(title: "Send Diagnostics…", action: #selector(sendDiagnostics), keyEquivalent: "")
-        diag.target = self
-        helpMenu.addItem(diag)
+        func addHelp(_ title: String, _ action: Selector?) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            helpMenu.addItem(item)
+            return item
+        }
+        _ = addHelp("About Spiel", #selector(showAbout))
+        _ = addHelp("Setup…", #selector(showSetupFromMenu))
+        _ = addHelp("Install Command Line Tool…", #selector(installCommandLineTool))
+        helpMenu.addItem(.separator())
+        // Off by default: the log holds every transcript verbatim, so it is only
+        // written once the user asks for it. The checkmark IS the persisted state.
+        addHelp("Diagnostic Logging", #selector(toggleLogging)).state = DiagnosticLog.isEnabled ? .on : .off
+        let logExists = FileManager.default.fileExists(atPath: DiagnosticLog.url.path)
+        addHelp("Open Log", logExists ? #selector(openLog) : nil).isEnabled = logExists
+        _ = addHelp("Send Diagnostics…", #selector(sendDiagnostics))
+        helpMenu.addItem(.separator())
+        addHelp("Last dictation: \(lastOutcome ?? "none")", nil).isEnabled = false
+        addHelp("Last Listen session: \(lastSession ?? "none")", nil).isEnabled = false
+        addHelp("Microphone: \(inputDeviceLabel())", nil).isEnabled = false
         help.submenu = helpMenu
         menu.addItem(help)
-        let quit = NSMenuItem(title: "Quit Spiel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quit)
+
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Spiel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
+    }
+
+    private static func secureInputTitle(_ holder: String) -> String {
+        "⚠︎ Secure Input is on\(holder). Dictations also stay on the clipboard."
     }
 
     /// Returns the cached holder if fresh; otherwise kicks off an off-main lookup
@@ -1136,8 +1076,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.secureHolderLookupRunning = false
                 self.secureHolderCache = (holder, Date())
                 if let menu = self.statusItem.menu,
-                   let item = menu.items.first(where: { $0.title.hasPrefix("⚠︎ Secure Input active") }) {
-                    item.title = "⚠︎ Secure Input active\(holder.map { " (held by \($0))" } ?? " (holder unknown)") — ⌘V paste is blocked"
+                   let item = menu.items.first(where: { $0.title.hasPrefix("⚠︎ Secure Input is on") }) {
+                    item.title = Self.secureInputTitle(holder.map { " (\($0))" } ?? "")
                 }
             }
         }
@@ -1235,7 +1175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// choice is saved like any Settings shortcut (Settings → Reset puts ⌘⇧D back).
     @objc private func useF5() {
         guard !settings.listenCombo.sameKeys(as: .f5) else {
-            lastError = "F5 is already the Listen shortcut — pick another in Settings"
+            lastError = "F5 is already the Listen shortcut."
             updateStatusItem()
             return
         }
@@ -1401,7 +1341,7 @@ extension AppDelegate: NSWindowDelegate {
             self.settings.engine = choice
             if self.phase == .idle && !self.isWarming { self.reloadEngine() } else {
                 self.engineReloadPending = true
-                self.settingsModel.engineStatus = "Switches to \(choice.engineName) when the current session ends"
+                self.settingsModel.engineStatus = "Switches to \(choice.engineName) after this session."
             }
         }
         m.setMicrophone = { [weak self] uid, name in
@@ -1422,7 +1362,7 @@ extension AppDelegate: NSWindowDelegate {
             guard let self else { return }
             let alert = NSAlert()
             alert.messageText = "Clear dictation history?"
-            alert.informativeText = "This deletes the \(self.history.entries.count) saved dictations from this Mac."
+            alert.informativeText = "\(self.history.entries.count) dictations will be deleted."
             alert.addButton(withTitle: "Clear")
             alert.addButton(withTitle: "Cancel")
             alert.buttons.first?.hasDestructiveAction = true
@@ -1462,7 +1402,7 @@ extension AppDelegate: NSWindowDelegate {
         if !engineReloadPending {
             m.engineStatus = isWarming || !engineReady && lastError == nil
                 ? "Loading…"
-                : engineReady ? "In use: \(engineName)\(lastError.map { " — \($0)" } ?? "")" : "Not loaded: \(lastError ?? "unknown")"
+                : engineReady ? (lastError ?? "") : "Not loaded: \(lastError ?? "unknown error")"
         }
         m.devices = AudioCapture.inputDevices()
         m.systemDefaultName = AudioCapture.defaultInputDeviceName()
@@ -1471,7 +1411,7 @@ extension AppDelegate: NSWindowDelegate {
         let launch = LaunchAtLogin.state()
         m.openAtLogin = launch.isChecked
         switch launch {
-        case .requiresApproval: m.openAtLoginNote = "Blocked in System Settings → General → Login Items — only you can allow it there."
+        case .requiresApproval: m.openAtLoginNote = "Turned off in System Settings → General → Login Items."
         case .unavailable(let why): m.openAtLoginNote = why
         default: m.openAtLoginNote = launch.isChecked ? LaunchAtLogin.locationNote(bundlePath: Bundle.main.bundleURL.path) : nil
         }
@@ -1557,7 +1497,7 @@ extension AppDelegate: NSWindowDelegate {
             }()
             let panel = NSSavePanel()
             panel.title = "Save Spiel Diagnostics"
-            panel.message = "Contains app and system state and a redacted log — no dictated text, history or vocabulary."
+            panel.message = "Doesn't include dictated text, history or vocabulary."
             panel.nameFieldStringValue = "Spiel Diagnostics \(stamp).zip"
             panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
             panel.allowedContentTypes = [.zip]
@@ -1831,11 +1771,11 @@ extension AppDelegate {
 
             let ask = NSAlert()
             ask.messageText = "Install the spiel command?"
-            var info = "Creates \(user.path)/spiel, a link to the tool inside this copy of Spiel. No administrator password. If you move Spiel.app later, install again.\n\nThen: spiel transcribe meeting.m4a — see spiel --help."
+            var info = "Adds \(user.path)/spiel. If you move Spiel, install it again."
             if userOnPath == false {
-                info += "\n\n\(user.path) is not on your shell's PATH\(offerSystem ? " — /usr/local/bin is, and you can write to it" : ""), so after installing there you will need to add it (the next window shows the line)."
+                info += "\n\n\(user.path) isn't on your PATH\(offerSystem ? ", /usr/local/bin is" : "")."
             } else if userOnPath == nil {
-                info += "\n\nSpiel could not read your shell's PATH to check that \(user.path) is on it."
+                info += "\n\nCouldn't check whether \(user.path) is on your PATH."
             }
             ask.informativeText = info
             ask.addButton(withTitle: "Install")
@@ -1860,10 +1800,10 @@ extension AppDelegate {
                     DiagnosticLog.write("cli: replaced link to \(prev)")
                 }
                 DiagnosticLog.write("cli: \(link) → \(helper.path)")
-                var text = "\(link) → \(helper.path)\n\nTry: spiel --help"
+                var text = "Try: spiel --help"
                 let onPath = target == system || userOnPath == true
                 if !onPath {
-                    text += "\n\n\(target.path) is not on your PATH\(userOnPath == nil ? " (could not check)" : ""). Add this line to ~/.zshrc, then open a new terminal:\n\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                    text += "\n\nAdd this line to ~/.zshrc, then open a new terminal:\n\nexport PATH=\"$HOME/.local/bin:$PATH\""
                     result.addButton(withTitle: "Copy Line")
                     result.addButton(withTitle: "OK")
                 }
@@ -1875,7 +1815,7 @@ extension AppDelegate {
             } catch {
                 DiagnosticLog.write("cli: install FAILED: \(error)")
                 result.alertStyle = .warning
-                result.messageText = "Could not install spiel"
+                result.messageText = "Couldn't install spiel"
                 result.informativeText = "\(error)"
                 result.runModal()
             }

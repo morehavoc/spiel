@@ -1,172 +1,42 @@
 # Spiel
 
-A macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Press a hotkey, speak naturally, and have your words transcribed and inserted into any application.
+Dictation for the Mac that runs entirely on the Mac. Press a shortcut, talk, and the
+text goes into whatever app you're using. No account, no subscription, nothing sent
+anywhere.
 
-<img width="918" height="598" alt="image" src="https://github.com/user-attachments/assets/5a0de69f-6f8d-4d36-b80f-99071ca5827d" />
+![Spiel dictating into a text field](native/docs/media/spiel-v2-demo.gif)
 
+- **Dictation.** ⌘⇧D to start and stop, or hold to talk. Works in any app.
+- **Listen.** ⌘⇧L records a whole meeting or talk to a Markdown transcript with timestamps.
+- **Vocabulary.** Teach it names and jargon it gets wrong.
+- **History.** Your last 50 dictations, searchable.
+- **Command line.** `spiel transcribe meeting.m4a` turns any audio or video file into
+  text, Markdown, SRT, VTT or JSON. Built for scripts and AI agents.
 
-## Features
+Speech recognition is NVIDIA's Parakeet running on the Neural Engine. Requires an
+Apple silicon Mac and macOS 14 or later.
 
-- **Global Hotkey**: Press ⌘\\ (or F5, or custom shortcut) to start/stop recording from anywhere
-- **Real-time Transcription**: Uses OpenAI's `gpt-4o-mini-transcribe` model for accurate speech-to-text
-- **Voice Activity Detection**: Automatically detects pauses in speech to send audio for transcription
-- **AI Text Cleanup**: Optional GPT-4o-mini post-processing to fix grammar and remove filler words
-- **Universal Text Insertion**: Automatically pastes transcribed text into any active application
-- **Floating Recording Bar**: Minimal, draggable UI showing waveform and live transcript
-- **Menu Bar App**: Runs quietly in your menu bar with quick access to settings
+## Get it
 
+- **Signed build with automatic updates:** $19 on Gumroad, with a 14-day free trial,
+  for 2 Macs. Available with the first release.
+- **Build it yourself, free:** see [native/README.md](native/README.md#building).
+  Builds from source have no trial or license check.
 
-
-https://github.com/user-attachments/assets/83789512-9322-44de-b519-f50aa1f0c091
-
-
-
-## Requirements
-
-- macOS 10.15 or later
-- OpenAI API key with access to audio transcription
-- Microphone access permission
-- Accessibility permission (for text insertion)
-
-## Installation
-
-### From DMG (Recommended)
-
-1. Download the latest `.dmg` from the releases
-2. Open the DMG and drag Spiel to your Applications folder
-3. Launch Spiel from Applications
-4. Grant microphone and accessibility permissions when prompted
-5. Open Settings from the menu bar icon and enter your OpenAI API key
-
-### From Source
+## Command line
 
 ```bash
-# Clone the repository
-git clone git@github.com:morehavoc/spiel.git
-cd spiel
-
-# Install dependencies
-npm install
-
-# Build for production
-npm run build:mac
+spiel transcribe meeting.m4a                  # text to stdout
+spiel transcribe talk.mp4 -f srt -o talk.srt  # also md, vtt, json
+spiel transcripts                              # Listen transcripts, newest first
+spiel doctor                                   # models, versions, permissions
 ```
 
-The built app will be in the `release/` folder as a `.dmg` file. Open it and drag Spiel to your Applications folder.
-
-#### First Launch
-
-On first launch, macOS may block the app since it's not signed. To open it:
-
-1. Go to **System Preferences → Privacy & Security**
-2. Scroll down and click **"Open Anyway"** next to the Spiel message
-3. Grant **Microphone** permission when prompted
-4. Grant **Accessibility** permission (required for hotkey detection and text insertion):
-   - Go to **System Preferences → Privacy & Security → Accessibility**
-   - Add Spiel to the list and enable it
-
-#### Development Mode
-
-```bash
-# Run with hot reload for development
-npm run dev
-```
-
-## Usage
-
-1. **Start Recording**: Press **⌘\\** (Cmd+Backslash) or your configured hotkey
-2. **Speak**: Talk naturally - the app detects when you pause and sends audio for transcription
-3. **Stop Recording**: Press the hotkey again, or press **Enter** to stop, apply AI cleanup (if enabled), and insert text
-4. **Cancel**: Press **Escape** to cancel and discard the recording
-5. **Text Inserted**: Your transcription is automatically pasted into the previously active application
-
-### Settings
-
-Access settings by clicking the **gear icon (⚙️)** in the recording bar, or from the menu bar icon:
-
-- **API Key**: Your OpenAI API key (stored encrypted)
-- **Hotkey**: Choose between ⌘\\ (Cmd+Backslash), F5, or a custom shortcut
-- **Silence Duration**: How long to wait after speech before processing (default: 900ms)
-- **Language Hint**: Improve accuracy by specifying your primary language
-- **AI Cleanup**: Enable/disable grammar correction and filler word removal (runs on full transcript when you stop recording). When enabled, you can customize the AI prompt to add domain-specific vocabulary, spelling corrections, or formatting instructions
-- **Insertion Method**: Paste (faster) or type character-by-character
-
-## Development
-
-```bash
-npm run dev        # Run with hot reload
-npm run typecheck  # Type check
-npm run build:mac  # Build for macOS
-```
-
-### Project Structure
-
-```
-spiel/
-├── electron/           # Main process (Node.js)
-│   ├── main.ts         # App entry point
-│   ├── preload.ts      # Context bridge for IPC
-│   └── services/       # Core services
-│       ├── hotkeyManager.ts    # Global hotkey detection
-│       ├── whisperApi.ts       # OpenAI transcription
-│       ├── aiCleanup.ts        # Text post-processing
-│       ├── textInserter.ts     # Clipboard/paste handling
-│       └── windowManager.ts    # Window management
-├── src/                # Renderer process (React)
-│   ├── windows/        # RecordingBar, Settings
-│   ├── components/     # UI components
-│   ├── hooks/          # React hooks
-│   └── stores/         # Zustand state
-└── resources/          # App icons and assets
-```
-
-### Tech Stack
-
-- **Electron** - Cross-platform desktop framework
-- **React 18** - UI framework
-- **TypeScript** - Type safety
-- **Vite** - Build tool
-- **Tailwind CSS** - Styling
-- **Zustand** - State management
-- **OpenAI SDK** - API client
-- **uiohook-napi** - Global keyboard hooks
-
-## Permissions
-
-Spiel requires the following macOS permissions:
-
-- **Microphone**: Required for voice recording
-- **Accessibility**: Required for global hotkey detection and text insertion
-
-You can grant these in System Preferences > Privacy & Security.
-
-## Troubleshooting
-
-### Hotkey not working
-- Ensure Spiel has Accessibility permission in System Preferences
-- Try restarting the app after granting permissions
-
-### Transcription failing
-- Verify your OpenAI API key is valid (use the Test button in Settings)
-- Check that your API key has access to audio transcription endpoints
-- Ensure you have sufficient API credits
-
-### Text not being inserted
-- Grant Accessibility permission for keyboard simulation
-- Try switching to "Type Characters" insertion method in Settings
-
-## Privacy
-
-- Audio is sent to OpenAI's API for transcription (not stored locally)
-- Your API key is encrypted using macOS Keychain
-- No telemetry or usage data is collected
+Install it from the Spiel menu: Help → Install Command Line Tool.
 
 ## License
 
-This project is licensed under a Non-Commercial License. You are free to use, modify, and distribute this software for personal and non-commercial purposes. Commercial use and selling of this software is prohibited. See the [LICENSE](LICENSE) file for details.
+GPL-3.0. See [LICENSE](LICENSE) and [third-party notices](native/THIRD_PARTY_NOTICES.md).
 
-## Acknowledgments
-
-- [OpenAI](https://openai.com) for the Whisper transcription API
-- [Electron](https://electronjs.org) for the desktop framework
-- [uiohook-napi](https://github.com/SnosMe/uiohook-napi) for keyboard hook support
+The original Electron version of Spiel, which used OpenAI's Whisper API, is still in
+`electron/` and `src/`.

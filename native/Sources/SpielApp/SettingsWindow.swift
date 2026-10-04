@@ -86,7 +86,7 @@ final class SettingsModel: ObservableObject {
         let def: HotkeyManager.Combo = id == .dictation ? .defaultCombo : .listen
         let other: HotkeyManager.Id = id == .dictation ? .listen : .dictation
         if let why = HotkeyRules.validate(def, otherCombo: combo(other), otherName: other == .listen ? "Listen" : "Dictation") {
-            setNote(id, "cannot reset: \(why) — change that one first")
+            setNote(id, "Can't reset: \(why).")
             return
         }
         setNote(id, applyHotkey(id, def))
@@ -110,13 +110,13 @@ final class SettingsModel: ObservableObject {
     func saveVocabulary() {
         let data = Data(vocabText.utf8)
         guard data.count <= Glossary.maxUserFileBytes else {
-            vocabStatus = "Not saved: \(data.count / 1024) KB is over the \(Glossary.maxUserFileBytes / 1024) KB limit"
+            vocabStatus = "Not saved. The limit is \(Glossary.maxUserFileBytes / 1024) KB."
             return
         }
         do {
             try DictationHistory.atomicWrite(data, to: Glossary.userFileURL)
             vocabSaved = vocabText
-            vocabStatus = "Saved — " + describeVocabulary(vocabText) + ". The next dictation uses it."
+            vocabStatus = "Saved. " + describeVocabulary(vocabText)
             DiagnosticLog.write("vocabulary saved from Settings (\(data.count) bytes)")
         } catch {
             vocabStatus = "Not saved: \(error.localizedDescription)"
@@ -125,7 +125,7 @@ final class SettingsModel: ObservableObject {
 
     private func describeVocabulary(_ text: String) -> String {
         let n = Glossary.parse(text).count
-        return "\(n) term\(n == 1 ? "" : "s") in \(Glossary.userFileURL.lastPathComponent)"
+        return "\(n) term\(n == 1 ? "" : "s")"
     }
 }
 
@@ -154,7 +154,7 @@ private struct GeneralSettings: View {
             Section("Shortcuts") {
                 hotkeyRow("Dictation", id: .dictation, note: model.dictationHotkeyNote)
                 hotkeyRow("Listen", id: .listen, note: model.listenHotkeyNote)
-                Picker("Dictation shortcut", selection: Binding(
+                Picker("Dictation", selection: Binding(
                     get: { model.dictationMode },
                     set: { model.dictationMode = $0; model.setDictationMode($0) }
                 )) {
@@ -172,14 +172,14 @@ private struct GeneralSettings: View {
                         model.setMicrophone(uid.isEmpty ? nil : uid, name)
                     }
                 )) {
-                    Text("System default (\(model.systemDefaultName))").tag("")
+                    Text("System Default (\(model.systemDefaultName))").tag("")
                     ForEach(model.devices, id: \.uid) { Text($0.name).tag($0.uid) }
                     if !model.microphoneUID.isEmpty, !model.devices.contains(where: { $0.uid == model.microphoneUID }) {
                         Text("\(model.microphoneName) (not connected)").tag(model.microphoneUID)
                     }
                 }
                 if !model.microphoneUID.isEmpty, !model.devices.contains(where: { $0.uid == model.microphoneUID }) {
-                    Text("\(model.microphoneName) is not connected — Spiel is using the system default until it is.")
+                    Text("\(model.microphoneName) isn't connected. Using the system default.")
                         .font(.callout).foregroundStyle(.orange)
                 }
             }
@@ -190,19 +190,14 @@ private struct GeneralSettings: View {
                 )) {
                     ForEach(EngineChoice.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                Text(model.engineStatus).font(.callout).foregroundStyle(.secondary)
+                if !model.engineStatus.isEmpty { Text(model.engineStatus).font(.callout).foregroundStyle(.secondary) }
             }
             Section("History") {
                 Toggle("Keep the last \(DictationHistory.cap) dictations", isOn: Binding(
                     get: { model.historyEnabled },
                     set: { model.historyEnabled = $0; model.setHistoryEnabled($0) }
                 ))
-                HStack {
-                    Text("Stored only on this Mac. Listen transcripts are saved separately.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Clear History") { model.clearHistory() }
-                }
+                Button("Clear History") { model.clearHistory() }
             }
             Section("General") {
                 Toggle("Open at Login", isOn: Binding(get: { model.openAtLogin }, set: { _ in model.toggleOpenAtLogin() }))
@@ -210,7 +205,7 @@ private struct GeneralSettings: View {
                     Text(note).font(.callout).foregroundStyle(.secondary)
                 }
                 Toggle("Diagnostic Logging", isOn: Binding(get: { model.diagnosticLogging }, set: { _ in model.toggleDiagnosticLogging() }))
-                Text("Writes ~/Library/Logs/Spiel.log, including dictated text. Off unless you are chasing a problem.")
+                Text("The log includes dictated text.")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
@@ -224,7 +219,7 @@ private struct GeneralSettings: View {
                 Text(title)
                 Spacer()
                 ShortcutRecorder(
-                    label: model.recording == id ? "Press a shortcut… (esc cancels)" : model.combo(id).description,
+                    label: model.recording == id ? "Press a shortcut" : model.combo(id).description,
                     isRecording: model.recording == id,
                     onStart: { model.beginRecording(id) },
                     onKey: { key, mods in model.recorded(id, keyCode: key, modifiers: mods) },
@@ -246,7 +241,7 @@ private struct VocabularySettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("One term per line: the spelling you want, then how the engine tends to hear it.")
+            Text("One per line: the spelling, then how it gets misheard.")
                 .foregroundStyle(.secondary)
             Text("ArcGIS: arc gis, arc g i s").font(.system(.body, design: .monospaced)).foregroundStyle(.secondary)
             TextEditor(text: $model.vocabText)

@@ -55,10 +55,7 @@ public enum LaunchAtLogin {
         if bundlePath.hasPrefix("/Applications/") || bundlePath.hasPrefix("/System/Applications/") {
             return nil
         }
-        if bundlePath.contains("/Downloads/") {
-            return "Spiel is in Downloads — replacing it with a new build breaks the login item. Move it to /Applications."
-        }
-        return "Spiel is not in /Applications — the login item points at its current location and breaks if it moves."
+        return "Move Spiel to Applications so Open at Login keeps working."
     }
 
     /// Why registration is impossible here, or nil when it is possible.
@@ -69,7 +66,7 @@ public enum LaunchAtLogin {
             return "not running as an app bundle (this is the command-line build)"
         }
         if isTranslocated(bundlePath: bundlePath) {
-            return "macOS is running Spiel from a temporary read-only copy. Move Spiel.app to /Applications, then reopen it."
+            return "Move Spiel to Applications, then open it again."
         }
         return nil
     }
