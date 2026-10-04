@@ -186,8 +186,11 @@ if [ "$DRY" = 1 ]; then
   # load (dyld: "Library not loaded … code signature … not valid"). Dry run only; a
   # Developer ID signs app and framework with one team and keeps validation on.
   APP_ENTITLEMENTS="$WORK/dry-run.entitlements"
-  cp "$ENTITLEMENTS" "$APP_ENTITLEMENTS"
-  plutil -insert com.apple.security.cs.disable-library-validation -bool true "$APP_ENTITLEMENTS"
+  # (Written whole: plutil -insert reads the dotted key as a key path.)
+  sed 's|</dict>|    <key>com.apple.security.cs.disable-library-validation</key>\
+    <true/>\
+</dict>|' "$ENTITLEMENTS" > "$APP_ENTITLEMENTS"
+  plutil -lint "$APP_ENTITLEMENTS" >/dev/null
   echo "DRY RUN: + com.apple.security.cs.disable-library-validation (no Team ID); a real release signs with exactly $ENTITLEMENTS"
 fi
 sign --entitlements "$APP_ENTITLEMENTS" "$APP"
