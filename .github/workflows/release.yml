@@ -1,0 +1,120 @@
+# Builds, signs, notarizes and publishes the official Spiel when a GitHub release is published.
+# The release must be tagged v<version> on a commit of main whose native/Sources/SpielCore/Version.swift
+# says that version. The DMG and appcast.xml are attached to the release; installed copies read
+# https://github.com/morehavoc/spiel/releases/latest/download/appcast.xml (Sparkle).
+#
+# Secrets (Settings → Secrets and variables → Actions). The four Apple ones are the same values
+# Margins uses (margins-v2 docs/releasing.md):
+#   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD  its export password
+#   APPLE_API_KEY_ID            App Store Connect API key id (notarization)
+#   APPLE_API_ISSUER            its issuer id
+#   APPLE_API_KEY               base64 of AuthKey_<id>.p8
+#   SPARKLE_PRIVATE_KEY         the Sparkle EdDSA private key (signs the appcast)
+#   GUMROAD_PRODUCT_ID          the Spiel product's id (license check)
+#   SPIEL_PURCHASE_URL          the Gumroad product page
+name: Release
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-spiel
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26 # SpeechAnalyzer needs the macOS 26 SDK
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tag is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status=$(gh api "repos/$REPO/compare/main...$GITHUB_SHA" --jq .status)
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::The release tag points at $GITHUB_SHA, which is not on main ($status)."; exit 1
+          fi
+
+      - name: Secrets present
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          GUMROAD_PRODUCT_ID: ${{ secrets.GUMROAD_PRODUCT_ID }}
+          SPIEL_PURCHASE_URL: ${{ secrets.SPIEL_PURCHASE_URL }}
+        run: |
+          set -uo pipefail
+          missing=""
+          for n in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY SPARKLE_PRIVATE_KEY GUMROAD_PRODUCT_ID SPIEL_PURCHASE_URL; do
+            [ -z "${!n:-}" ] && missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing. Nothing was built."; exit 1; fi
+
+      - name: Selftest
+        working-directory: native
+        run: |
+          swift build -c release --product spiel-cli
+          .build/release/spiel-cli selftest
+
+      # A throwaway keychain for this run only, holding the Developer ID certificate.
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/spiel-signing.keychain-db"
+          KCPW=$(openssl rand -hex 24)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KC" \
+            || { echo "::error::APPLE_CERTIFICATE did not import with APPLE_CERTIFICATE_PASSWORD."; exit 1; }
+          rm "$RUNNER_TEMP/cert.p12"
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KC" || echo "intermediate already present"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" > /dev/null
+          old=(); while IFS= read -r k; do old+=("$k"); done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
+          security list-keychains -d user -s "$KC" "${old[@]}"
+          security find-identity -v -p codesigning "$KC"
+
+      - name: Build, sign, notarize, DMG, appcast, upload
+        working-directory: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          SPIEL_GUMROAD_PRODUCT_ID: ${{ secrets.GUMROAD_PRODUCT_ID }}
+          SPIEL_PURCHASE_URL: ${{ secrets.SPIEL_PURCHASE_URL }}
+        run: |
+          set -euo pipefail
+          export NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_$NOTARY_KEY_ID.p8"
+          echo "$APPLE_API_KEY" | base64 --decode > "$NOTARY_KEY_PATH"
+          export SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle.key"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_FILE"
+          unset APPLE_API_KEY SPARKLE_PRIVATE_KEY
+          scripts/release.sh --ci
+
+      - name: Clean up keys
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/sparkle.key"
+          security delete-keychain "$RUNNER_TEMP/spiel-signing.keychain-db" 2>/dev/null || true

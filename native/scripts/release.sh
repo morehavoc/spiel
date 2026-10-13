@@ -6,22 +6,28 @@
 #   scripts/release.sh             build, sign, notarize, DMG, appcast (nothing published)
 #   scripts/release.sh --publish   the same, then tag v<version>, push the tag and create
 #                                  the GitHub release with the DMG + appcast.xml
+#   scripts/release.sh --ci        the GitHub Actions path (.github/workflows/release.yml): the
+#                                  release and its tag already exist; notarizes with an App
+#                                  Store Connect API key and uploads the DMG + appcast to it
 #   scripts/release.sh --dry-run   everything that can run without Apple: signs with the
 #                                  self-signed "Spiel Dev Signing" identity, skips
 #                                  notarization and publishing, and reports (instead of
 #                                  stopping on) what a real release would refuse.
 #
 # Environment (real release): SPIEL_GUMROAD_PRODUCT_ID, SPIEL_PURCHASE_URL.
+# --ci also needs NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER and SPARKLE_KEY_FILE.
 # Optional: SPIEL_SIGN_IDENTITY (a SHA-1 from `security find-identity`, if the keychain
 # holds more than one Developer ID Application identity).
 set -euo pipefail
 
 DRY=0
 PUBLISH=0
+CI_MODE=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --publish) PUBLISH=1 ;;
+    --ci) CI_MODE=1 ;;
     -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "release: unknown option $a" >&2; exit 1 ;;
   esac
@@ -33,6 +39,7 @@ step() { echo; echo "==> $*"; }
 gate() { if [ "$DRY" = 1 ]; then echo "DRY RUN — a real release would stop here: $*" >&2; else die "$*"; fi; }
 
 [ "$DRY" = 1 ] && [ "$PUBLISH" = 1 ] && die "--dry-run and --publish cannot be combined"
+[ "$CI_MODE" = 1 ] && { [ "$DRY" = 1 ] || [ "$PUBLISH" = 1 ]; } && die "--ci cannot be combined with --dry-run or --publish"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -53,7 +60,13 @@ APPCAST="$DIST/appcast.xml"
 SHARED="/Users/jaws/nexus/shared"
 ENTITLEMENTS="$ROOT/scripts/Spiel.entitlements"
 NOTARY_PROFILE="spiel-notary"
-SPARKLE_KEY_FILE="$HOME/.spiel-secrets/sparkle_ed25519_private.txt"
+SPARKLE_KEY_FILE="${SPARKLE_KEY_FILE:-$HOME/.spiel-secrets/sparkle_ed25519_private.txt}"
+# notarytool credentials: an App Store Connect API key (CI), else the keychain profile.
+if [ -n "${NOTARY_KEY_PATH:-}" ]; then
+  NOTARY_ARGS=(--key "$NOTARY_KEY_PATH" --key-id "${NOTARY_KEY_ID:?NOTARY_KEY_ID}" --issuer "${NOTARY_ISSUER:?NOTARY_ISSUER}")
+else
+  NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+fi
 SPARKLE_ACCOUNT="spiel"
 # The signing tools, from Sparkle's release tarball. Same version as the Package.swift
 # pin; the digest is GitHub's recorded asset digest for that file.
@@ -74,6 +87,13 @@ trap cleanup EXIT
 echo "Spiel $VERSION (build $BUILD) — $([ "$DRY" = 1 ] && echo "DRY RUN" || echo "release")$([ "$PUBLISH" = 1 ] && echo " + publish")"
 
 # ---------------------------------------------------------------------------------
+if [ "$CI_MODE" = 1 ]; then
+step "git: the release's tag $TAG is this commit"
+[ "$(git rev-parse "refs/tags/$TAG^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ] \
+  || die "tag $TAG is not the checked-out commit (Version.swift says $VERSION; tag the release v$VERSION)"
+gh release view "$TAG" --repo "$REPO" >/dev/null || die "no GitHub release for $TAG"
+echo "commit $(git rev-parse --short HEAD) = $TAG"
+else
 step "git: clean tree, unused tag $TAG"
 if [ -n "$(git status --porcelain)" ]; then
   git status --short | head -20 >&2
@@ -86,6 +106,7 @@ else
   gate "could not reach origin to check for tag $TAG"
 fi
 echo "commit $(git rev-parse --short HEAD), tag $TAG free"
+fi
 
 # ---------------------------------------------------------------------------------
 step "Gumroad product"
@@ -123,9 +144,9 @@ else
     IDENTITY="$(echo "$ids" | awk '{print $2}')"
   fi
   echo "$ids"
-  step "notary profile '$NOTARY_PROFILE'"
-  out="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1)" \
-    || die "notarytool profile '$NOTARY_PROFILE' does not work (RELEASING.md step 2):"$'\n'"$out"
+  step "notary credentials"
+  out="$(xcrun notarytool history "${NOTARY_ARGS[@]}" 2>&1)" \
+    || die "notarytool credentials do not work (RELEASING.md step 2):"$'\n'"$out"
   echo "ok"
 fi
 
@@ -204,13 +225,13 @@ codesign -d --verbose=2 "$APP" 2>&1 | grep -E "^(Authority|Timestamp|TeamIdentif
 
 notarize() {
   local file="$1" out status id
-  out="$(xcrun notarytool submit "$file" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)" \
+  out="$(xcrun notarytool submit "$file" "${NOTARY_ARGS[@]}" --wait --output-format json)" \
     || die "notarytool submit failed for $file"
   status="$(plutil -extract status raw - <<<"$out")"
   id="$(plutil -extract id raw - <<<"$out")"
   echo "notarization $id: $status"
   if [ "$status" != "Accepted" ]; then
-    xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+    xcrun notarytool log "$id" "${NOTARY_ARGS[@]}" >&2 || true
     die "notarization of $(basename "$file") was $status"
   fi
 }
@@ -275,15 +296,20 @@ sig="$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' "$APPCAST" | head -1)
 echo "appcast: $APPCAST (signature verified)"
 
 # ---------------------------------------------------------------------------------
+if [ -d "$SHARED" ]; then
 step "copy to shared/"
 SHARED_NAME="$DMG_NAME"
 [ "$DRY" = 1 ] && SHARED_NAME="Spiel-$VERSION-dryrun.dmg"
 cp "$DMG" "$SHARED/$SHARED_NAME"
 [ "$(shasum -a 256 < "$DMG")" = "$(shasum -a 256 < "$SHARED/$SHARED_NAME")" ] || die "the copy in $SHARED differs from $DMG"
 echo "$SHARED/$SHARED_NAME"
+fi
 
 # ---------------------------------------------------------------------------------
-if [ "$PUBLISH" = 1 ]; then
+if [ "$CI_MODE" = 1 ]; then
+  step "upload to the $TAG release"
+  gh release upload "$TAG" "$DMG" "$APPCAST" --repo "$REPO" --clobber
+elif [ "$PUBLISH" = 1 ]; then
   step "publish $TAG"
   git tag -a "$TAG" -m "Spiel $VERSION (build $BUILD)"
   git push origin "$TAG"

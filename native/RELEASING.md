@@ -4,62 +4,54 @@ The official build is the same source compiled with `-DOFFICIAL_BUILD` (14-day t
 then a Gumroad license), signed with a Developer ID, notarized, shipped as a DMG on
 GitHub Releases, and updated by Sparkle. A plain source build has no license gate.
 
-## One-time setup
+## Releases run on GitHub Actions
 
-1. **Developer ID certificate.** developer.apple.com → Certificates → + → Developer ID
-   Application (account holder only). Make the CSR in Keychain Access, install the
-   certificate into the login keychain, then check:
+`.github/workflows/release.yml` does the whole release when a GitHub release is
+published: selftest, build with `-DOFFICIAL_BUILD`, Developer ID signing in a throwaway
+keychain, notarization with an App Store Connect API key, DMG, Sparkle appcast, and
+both files attached to the release. Nobody signs on a Mac.
 
-       security find-identity -v -p codesigning | grep "Developer ID Application"
+### One-time setup: repository secrets
 
-2. **Notary credentials.** Make an app-specific password at account.apple.com, then:
+The four Apple secrets are the same values Margins uses (margins-v2 `docs/releasing.md`
+steps 1–2: the Developer ID `.p12` and the `AuthKey_<id>.p8`).
 
-       xcrun notarytool store-credentials spiel-notary \
-         --apple-id <apple id> --team-id <team id> --password <app-specific password>
+- `APPLE_CERTIFICATE`: `base64 -i margins-developer-id.p12`
+- `APPLE_CERTIFICATE_PASSWORD`: its export password
+- `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`: the App Store Connect key's ids
+- `APPLE_API_KEY`: `base64 -i AuthKey_<id>.p8`
+- `SPARKLE_PRIVATE_KEY`: the Sparkle EdDSA private key (below)
+- `GUMROAD_PRODUCT_ID`: the product's id (Gumroad → product → License key block; turn on
+  "Generate a unique license key per sale")
+- `SPIEL_PURCHASE_URL`: the product page
 
-3. **Gumroad product.** On the product, turn on "Generate a unique license key per
-   sale". The product ID is shown there. Export it with the product page URL:
+Activation allows 2 Macs per key (Gumroad's `uses` count). To free a seat, decrement
+uses or disable the key in Gumroad; a disabled, refunded or charged-back key stops
+working after two weekly checks.
 
-       export SPIEL_GUMROAD_PRODUCT_ID=<product id>
-       export SPIEL_PURCHASE_URL=https://<you>.gumroad.com/l/<product>
+**Sparkle update key.** Generated on jaws-mini (2026-10-03): login keychain account
+`spiel`, backup `~/.spiel-secrets/sparkle_ed25519_private.txt` (0600). The public key is
+`SUPublicEDKey` in `scripts/bundle.sh`. Installed copies accept only updates signed with
+it. Keep a copy in 1Password; never commit it or put it on the NAS.
 
-   The release script refuses to build without both. Activation allows 2 Macs per key
-   (Gumroad's `uses` count). To free a seat, decrement uses or disable the key in
-   Gumroad; a disabled, refunded or charged-back key stops working after two weekly
-   checks.
+### Release
 
-4. **Sparkle update key.** Already generated on jaws-mini (2026-10-03):
-   - private key: login keychain, account `spiel`
-     (`generate_keys --account spiel -p` prints the public key)
-   - backup: `~/.spiel-secrets/sparkle_ed25519_private.txt` (0600, dir 0700)
-   - public key: `SUPublicEDKey` in `scripts/bundle.sh`
+1. Bump `Sources/SpielCore/Version.swift` (`short` and `build`; build must grow) on main.
+2. Publish a release tagged `v<version>` on that commit:
 
-   Copy the backup into 1Password. Never commit it, never put it on the NAS. Installed
-   copies accept only updates signed with this key. Restore on another Mac with
-   `generate_keys --account spiel -f <file>`. The tools are in
-   `~/Library/Caches/spiel-release/Sparkle-<version>/bin` after the first release run.
+       gh release create v<version> --target main --title "Spiel <version>" --notes "…"
 
-## Release
+3. The workflow attaches `Spiel-<version>.dmg` and `appcast.xml`. Sparkle reads
+   `releases/latest/download/appcast.xml`, so the newest non-prerelease release is the
+   one every copy updates to (for the few minutes before the files land, the feed 404s
+   and copies just check again later).
 
-1. Bump `Sources/SpielCore/Version.swift` (`short` and `build`; build must grow).
-2. Commit. The tree must be clean.
-3. Build, sign, notarize, DMG, appcast:
+### Locally
 
-       native/scripts/release.sh
-
-   Output: `native/dist/<version>/Spiel-<version>.dmg` and `appcast.xml`, plus a copy
-   of the DMG in `/Users/jaws/nexus/shared/`.
-4. Publish (tags `v<version>`, pushes the tag, creates the GitHub release with the DMG
-   and `appcast.xml`):
-
-       native/scripts/release.sh --publish
-
-   Sparkle reads `releases/latest/download/appcast.xml`, so the newest non-prerelease
-   release is the one every copy updates to.
-
-`native/scripts/release.sh --dry-run` runs the whole pipeline with the self-signed
-"Spiel Dev Signing" identity, skips notarization and publishing, and lists what a real
-release would have refused. Its DMG goes to `shared/Spiel-<version>-dryrun.dmg`.
+`scripts/release.sh` still runs the same pipeline on a Mac with a Developer ID in the
+keychain and a `spiel-notary` notarytool profile (`--publish` tags and releases from
+there). `scripts/release.sh --dry-run` runs everything with the self-signed "Spiel Dev
+Signing" identity and skips notarization and publishing.
 
 ## Building on jaws-mini
 
