@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var secureHolderLookupRunning = false
     private var hotkeyStatus: HotkeyManager.Status = .unregistered
     private var listenHotkeyStatus: HotkeyManager.Status = .unregistered
+    private var screenshotHotkeyStatus: HotkeyManager.Status = .unregistered
     private var lastError: String?
     /// What the last dictation did, in one line. Lives in the menu because the menu
     /// is the only surface the user actually opens when "nothing happened".
@@ -75,6 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var listenSaveErrorNotified = false
     /// Listen counterpart of `lastOutcome`, one line in the menu.
     private var lastSession: String?
+    /// The screenshot folder beside the transcript (2.7), nil until the first
+    /// screenshot. Normally the transcript's name; if a rename could not move the
+    /// folder it keeps the old name, so the links still resolve.
+    private var listenScreenshots: String?
+    private var screenshotInFlight = false
+    /// The last screenshot failure, a menu problem line until the next one works.
+    private var screenshotProblem: String?
     /// Name of the engine behind `session`, for the transcript's frontmatter.
     private var engineName = "unknown"
 
@@ -178,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch id {
                 case .dictation: self.hotkeyStatus = status
                 case .listen: self.listenHotkeyStatus = status
+                case .screenshot: self.screenshotHotkeyStatus = status
                 }
                 // Not a console log. A dead hotkey must be visible.
                 if case .failed(let desc, let reason) = status, !self.quietHotkeyFailures {
@@ -191,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         registerHotkey(.dictation, settings.dictationCombo)
         registerHotkey(.listen, settings.listenCombo)
+        registerHotkey(.screenshot, settings.screenshotCombo)
 
         // Warm the model at launch, not on first keypress. A cold Parakeet load is
         // seconds; paying it while the user is already talking is the worst moment.
@@ -532,6 +542,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             eventsGoToListen = true
             listenDoc = doc
             listenURL = nil
+            listenScreenshots = nil
+            screenshotProblem = nil
             listenStartedAt = Date()
             listenEndedAt = nil
             pausedAt = nil
@@ -549,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             listenPanel.onPause = { [weak self] in Task { @MainActor in self?.pauseListening() } }
             listenPanel.onResume = { [weak self] in Task { @MainActor in self?.resumeListening() } }
             listenPanel.onStop = { [weak self] in Task { @MainActor in self?.stopListening() } }
+            listenPanel.onScreenshot = { [weak self] in Task { @MainActor in self?.takeScreenshot() } }
             listenPanel.onCopy = { [weak self] in Task { @MainActor in self?.copyListen() } }
             listenPanel.onOpen = { [weak self] in Task { @MainActor in self?.openListen() } }
             autosave?.invalidate()
@@ -808,12 +821,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// it (`replacing:`). Failure is surfaced once per session, not once per 30 s.
     private func saveListen() {
         guard let doc = listenDoc, let started = listenStartedAt else { return }
-        let text = doc.render(frontmatter: listenFrontmatter(endedAt: listenEndedAt ?? Date()))
         let url = TranscriptStore.url(for: listenTitle, startedAt: started, current: listenURL)
+        // A rename takes the screenshot folder with it, before the links are written.
+        let screenshotsBefore = listenScreenshots
+        if let name = listenScreenshots {
+            let moved = ScreenshotStore.follow(name, to: url)
+            if let why = moved.error {
+                DiagnosticLog.write("LISTEN: screenshot folder kept its old name: \(why)")
+            }
+            listenScreenshots = moved.name
+        }
+        let text = doc.render(frontmatter: listenFrontmatter(endedAt: listenEndedAt ?? Date()),
+                              screenshots: listenScreenshots ?? "")
         do {
             try TranscriptStore.save(text, to: url, replacing: listenURL)
             listenURL = url
         } catch {
+            // The old file still links the old folder name: put the folder back.
+            if let before = screenshotsBefore, let old = listenURL, before != listenScreenshots {
+                listenScreenshots = ScreenshotStore.follow(listenScreenshots ?? before, to: old).name
+            }
             lastError = "transcript autosave failed: \(error)"
             DiagnosticLog.write("LISTEN: autosave FAILED: \(error)")
             if !listenSaveErrorNotified {
@@ -850,6 +877,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pb.clearContents()
         pb.setString(doc.body(plain: true), forType: .string)
         listenPanel.flashCopied()
+    }
+
+    // MARK: - Screenshots (2.7)
+
+    /// Screenshot shortcut, panel camera button, or menu item. Only while Listen is
+    /// recording or paused; the shot is the display under the pointer, saved
+    /// beside the transcript and linked at the current offset.
+    private func takeScreenshot() {
+        guard isListening, let session else {
+            DiagnosticLog.write("screenshot ignored: Listen is not running (\(phase))")
+            Notifier.post(title: "Screenshot", body: "Start Listen to add screenshots.")
+            return
+        }
+        guard !screenshotInFlight else { return }
+        guard ScreenCapture.hasPermission else {
+            ScreenCapture.requestPermission()
+            screenshotFailed(ScreenCapture.Failure.noPermission.description)
+            return
+        }
+        screenshotInFlight = true
+        let pressedAt = Date()
+        let pausedFor = pausedAt.map { pressedAt.timeIntervalSince($0) } ?? 0
+        let correctionAtPress = listenDoc?.pauseCorrection ?? 0
+        let display = ScreenCapture.displayUnderPointer()
+        Task { @MainActor in
+            defer { self.screenshotInFlight = false }
+            let at = await session.audioSeconds
+            do {
+                guard let display else { throw ScreenCapture.Failure.noDisplay }
+                let png = try await ScreenCapture.capturePNG(display: display)
+                guard var doc = self.listenDoc else { return }
+                // A pause that closed while the capture ran is now in the document's
+                // correction; do not count it twice.
+                let extra = max(0, pausedFor - (doc.pauseCorrection - correctionAtPress))
+                let offset = at + doc.pauseCorrection + extra
+                if self.listenURL == nil { self.saveListen() }
+                guard let transcript = self.listenURL else {
+                    throw ScreenshotStore.StoreError.write("the transcript is not saved")
+                }
+                let name = self.listenScreenshots ?? ScreenshotStore.folderName(forTranscript: transcript)
+                let folder = transcript.deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
+                let file = try ScreenshotStore.save(png, offset: offset, into: folder)
+                self.listenScreenshots = name
+                doc.addScreenshot(file: file, atOffset: at, pausedFor: extra)
+                self.listenDoc = doc
+                self.listenPanel.setDocument(doc)
+                self.screenshotProblem = nil
+                self.saveListen()
+                DiagnosticLog.write("screenshot at \(TranscriptDocument.formatOffset(offset)) (\(png.count / 1024) KB)")
+                self.updateStatusItem()
+            } catch {
+                self.screenshotFailed("\(error)")
+            }
+        }
+    }
+
+    private func screenshotFailed(_ why: String) {
+        let sentence = why.prefix(1).uppercased() + why.dropFirst()
+        screenshotProblem = sentence
+        DiagnosticLog.write("LISTEN: screenshot FAILED: \(sentence)")
+        Notifier.post(title: "Screenshot failed", body: sentence)
+        updateStatusItem()
     }
 
     private func openListen() {
@@ -932,7 +1021,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             symbol = "waveform"   // must look different from dictation: this one records other people
         } else if phase == .paused {
             symbol = "pause.circle"
-        } else if !hotkeyStatus.isHealthy || !listenHotkeyStatus.isHealthy || !engineReady {
+        } else if !hotkeyStatus.isHealthy || !listenHotkeyStatus.isHealthy || !screenshotHotkeyStatus.isHealthy || !engineReady {
             symbol = "exclamationmark.triangle.fill"  // never look healthy when we aren't
         } else {
             symbol = "mic"
@@ -967,6 +1056,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             _ = add("Start Listening" + shortcut(listenHotkeyStatus), #selector(menuToggleListen))
         }
+        if isListening {
+            _ = add("Take Screenshot" + shortcut(screenshotHotkeyStatus), #selector(menuTakeScreenshot))
+        }
 
         // Problems, only when there is one.
         var problems: [NSMenuItem] = []
@@ -982,6 +1074,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let item = NSMenuItem(title: "⚠︎ \(desc) isn't working: \(reason)", action: #selector(retryListenHotkey), keyEquivalent: "")
             item.target = self
             problems.append(item)
+        }
+        if case .failed(let desc, let reason) = screenshotHotkeyStatus {
+            let item = NSMenuItem(title: "⚠︎ \(desc) isn't working: \(reason)", action: #selector(retryScreenshotHotkey), keyEquivalent: "")
+            item.target = self
+            problems.append(item)
+        }
+        if let screenshotProblem {
+            problems.append(NSMenuItem(title: "⚠︎ Screenshot failed: \(screenshotProblem)", action: nil, keyEquivalent: ""))
         }
         if !engineReady {
             problems.append(NSMenuItem(title: "Loading speech model…", action: nil, keyEquivalent: ""))
@@ -1168,14 +1268,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuToggleListen() { toggleListen() }
     @objc private func menuPauseListen() { pauseListening() }
     @objc private func menuResumeListen() { resumeListening() }
+    @objc private func menuTakeScreenshot() { takeScreenshot() }
     @objc private func retryHotkey() {
         registerHotkey(.dictation, settings.dictationCombo)
     }
     /// F5 is the dictation fallback only; Listen has no fallback key. Since 2.4 the
     /// choice is saved like any Settings shortcut (Settings → Reset puts ⌘⇧D back).
     @objc private func useF5() {
-        guard !settings.listenCombo.sameKeys(as: .f5) else {
-            lastError = "F5 is already the Listen shortcut."
+        for (combo, name) in [(settings.listenCombo, "Listen"), (settings.screenshotCombo, "Screenshot")]
+        where combo.sameKeys(as: .f5) {
+            lastError = "F5 is already the \(name) shortcut."
             updateStatusItem()
             return
         }
@@ -1184,6 +1286,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func retryListenHotkey() {
         registerHotkey(.listen, settings.listenCombo)
+    }
+    @objc private func retryScreenshotHotkey() {
+        registerHotkey(.screenshot, settings.screenshotCombo)
     }
 
     @objc private func grantAccessibility() {
@@ -1208,6 +1313,8 @@ extension AppDelegate: NSWindowDelegate {
                 onRelease: { [weak self] in Task { @MainActor in self?.dictationKeyUp() } })
         case .listen:
             return hotkeys.register(.listen, combo) { [weak self] in Task { @MainActor in self?.toggleListen() } }
+        case .screenshot:
+            return hotkeys.register(.screenshot, combo) { [weak self] in Task { @MainActor in self?.takeScreenshot() } }
         }
     }
 
@@ -1376,7 +1483,12 @@ extension AppDelegate: NSWindowDelegate {
     /// Tries `combo`; on failure the previous combo goes back and the reason is
     /// returned for the field. Persisted only once it is actually registered.
     fileprivate func applyHotkeyFromSettings(_ id: HotkeyManager.Id, _ combo: HotkeyManager.Combo) -> String? {
-        let previous = id == .dictation ? settings.dictationCombo : settings.listenCombo
+        let previous: HotkeyManager.Combo
+        switch id {
+        case .dictation: previous = settings.dictationCombo
+        case .listen: previous = settings.listenCombo
+        case .screenshot: previous = settings.screenshotCombo
+        }
         quietHotkeyFailures = true
         defer { quietHotkeyFailures = false }
         let status = registerHotkey(id, combo)
@@ -1386,7 +1498,11 @@ extension AppDelegate: NSWindowDelegate {
             refreshSettingsModel()
             return "\(combo.description) could not be registered: \(reason). Kept \(previous.description)."
         }
-        if id == .dictation { settings.dictationCombo = combo } else { settings.listenCombo = combo }
+        switch id {
+        case .dictation: settings.dictationCombo = combo
+        case .listen: settings.listenCombo = combo
+        case .screenshot: settings.screenshotCombo = combo
+        }
         DiagnosticLog.write("hotkey \(id) → \(combo.description)")
         refreshSettingsModel()
         updateStatusItem()
@@ -1397,6 +1513,7 @@ extension AppDelegate: NSWindowDelegate {
         let m = settingsModel
         m.dictationCombo = hotkeys.combo(.dictation) ?? settings.dictationCombo
         m.listenCombo = hotkeys.combo(.listen) ?? settings.listenCombo
+        m.screenshotCombo = hotkeys.combo(.screenshot) ?? settings.screenshotCombo
         m.dictationMode = settings.dictationMode
         m.engine = settings.engine
         if !engineReloadPending {
@@ -1557,6 +1674,8 @@ extension AppDelegate: NSWindowDelegate {
             ("Notifications", notifText),
             ("Dictation hotkey", hotkeyLine(hotkeyStatus) + " — mode: \(settings.dictationMode.rawValue)"),
             ("Listen hotkey", hotkeyLine(listenHotkeyStatus)),
+            ("Screenshot hotkey", hotkeyLine(screenshotHotkeyStatus)),
+            ("Screen Recording", ScreenCapture.hasPermission ? "granted" : "not granted"),
             ("Engine chosen", settings.engine.engineName),
             ("Engine in use", engineReady ? engineName : "not loaded"),
             ("Apple SpeechAnalyzer", AppleSpeechTranscriber.isAvailable ? "available" : "not available (needs macOS 26)"),
@@ -1642,6 +1761,13 @@ extension AppDelegate {
                 DispatchQueue.main.async { MainActor.assumeIsolated { self?.refreshSetupModel() } }
             }
         }
+        m.requestScreenRecording = { [weak self] in
+            // The request is what puts Spiel INTO the Screen Recording list.
+            ScreenCapture.requestPermission()
+            SetupModel.openPrivacyPane("Privacy_ScreenCapture")
+            DiagnosticLog.write("setup: opened Screen Recording settings")
+            self?.refreshSetupModel()
+        }
         m.retryModel = { [weak self] in
             guard let self, !self.isWarming, self.phase == .idle else { return }
             DiagnosticLog.write("setup: model retry requested")
@@ -1675,6 +1801,7 @@ extension AppDelegate {
             updateStatusItem()
         }
         m.accessibility = ax
+        m.screenRecording = ScreenCapture.hasPermission
         m.engine = settings.engine
         m.mode = settings.dictationMode
         m.shortcut = hotkeys.combo(.dictation)?.description ?? settings.dictationCombo.description

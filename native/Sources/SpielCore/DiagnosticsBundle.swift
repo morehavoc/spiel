@@ -23,7 +23,7 @@ public enum DiagnosticsBundle {
         var out = "Spiel diagnostics — generated \(f.string(from: generatedAt))\n"
         out += "Contains no transcript text, no dictation history and no vocabulary terms.\n\n"
         for (k, v) in facts {
-            let value = redactQuotes(v).replacingOccurrences(of: "\n", with: " ")
+            let value = redactTranscriptNames(redactQuotes(v)).replacingOccurrences(of: "\n", with: " ")
             out += k.padding(toLength: width, withPad: " ", startingAt: 0) + " : " + value + "\n"
         }
         return out
@@ -33,6 +33,19 @@ public enum DiagnosticsBundle {
     /// transcript can itself contain quotes, so pairing them would leak the middle).
     /// A lone quote blanks to the end of the line.
     public static func redactQuotes(_ line: String) -> String {
+        redactSpan(redactSpan(line, open: "\"", close: "\""), open: "\u{201C}", close: "\u{201D}")
+    }
+
+    /// Foundation's file errors quote names in curly quotes (“Board review”), and a
+    /// screenshot folder IS the meeting title, so those are blanked the same way.
+    private static func redactSpan(_ line: String, open: Character, close: Character) -> String {
+        if open != close {
+            let firsts = [line.firstIndex(of: open), line.firstIndex(of: close)].compactMap { $0 }
+            guard let first = firsts.min() else { return line }
+            let last = [line.lastIndex(of: open), line.lastIndex(of: close)].compactMap { $0 }.max()!
+            if first == last { return String(line[..<first]) + "\(open)[redacted]" }
+            return String(line[..<first]) + "\(open)[redacted]\(close)" + String(line[line.index(after: last)...])
+        }
         guard let first = line.firstIndex(of: "\"") else { return line }
         let last = line.lastIndex(of: "\"")!
         if first == last { return String(line[..<first]) + "\"[redacted]" }
@@ -52,13 +65,20 @@ public enum DiagnosticsBundle {
 
     /// Listen files are named after the meeting title (`2026-09-11 1400 Board
     /// review.md`), and the title is blanked where it is quoted — so it must not
-    /// come back as a file name in `saved to …` or a `/Transcripts/…` path.
+    /// come back as a file name in `saved to …` or a `/Transcripts/…` path. Since
+    /// 2.7 the screenshot folder carries the same name: its paths and Markdown
+    /// image links are blanked too.
     public static func redactTranscriptNames(_ line: String) -> String {
         var out = line
-        for pattern in [#"saved to .*?\.md"#, #"/Transcripts/.*?\.md"#] {
+        let rules: [(String, String)] = [
+            (#"!\[Screenshot[^\]]*\]\([^)]*\)"#, "[screenshot link]"),
+            (#"/Transcripts/[^\n]*?\.png"#, "/Transcripts/[screenshot file]"),
+            (#"saved to .*?\.md"#, "saved to [transcript file]"),
+            (#"/Transcripts/.*?\.md"#, "/Transcripts/[transcript file]"),
+        ]
+        for (pattern, replacement) in rules {
             guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
             let range = NSRange(out.startIndex..., in: out)
-            let replacement = pattern.hasPrefix("saved") ? "saved to [transcript file]" : "/Transcripts/[transcript file]"
             out = re.stringByReplacingMatches(in: out, range: range, withTemplate: replacement)
         }
         return out

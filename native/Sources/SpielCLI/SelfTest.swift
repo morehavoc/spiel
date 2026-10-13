@@ -296,7 +296,7 @@ enum SelfTest {
         var fired: [String] = []
         var statuses: [String] = []
         mgr.setStatusHandler { id, st in statuses.append("\(id):\(st.isHealthy ? "ok" : "no")") }
-        expect(statuses.sorted().joined(separator: ","), "dictation:no,listen:no", "status handler reports both ids on install")
+        expect(statuses.sorted().joined(separator: ","), "dictation:no,listen:no,screenshot:no", "status handler reports every id on install")
 
         mgr.register(.dictation, .defaultCombo) { fired.append("dictation") }
         mgr.register(.listen, .listen) { fired.append("listen") }
@@ -1451,6 +1451,7 @@ enum SelfTest {
         boostSourceRules()
         await tests25()
         await tests26()
+        await tests27()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

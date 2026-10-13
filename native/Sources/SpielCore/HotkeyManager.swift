@@ -9,8 +9,8 @@ import Foundation
 /// just fails, and v1 went on sitting in the menu bar looking alive with a dead
 /// hotkey. Every registration here ends in a `Status` the app shows in its menu.
 ///
-/// Two hotkeys now (dictation ⌘⇧D, Listen ⌘⇧L), each with its own id, status and
-/// handler. The Carbon callback reads the event's `EventHotKeyID` and routes on it.
+/// Three hotkeys now (dictation ⌘⇧D, Listen ⌘⇧L, Screenshot ⌃⌥⌘S), each with its own
+/// id, status and handler. The Carbon callback reads the event's `EventHotKeyID` and routes on it.
 /// A failed registration of one never touches the other.
 ///
 /// The Carbon calls sit behind `Backend` so `spiel-cli selftest` can drive the
@@ -61,6 +61,19 @@ public final class HotkeyManager {
             modifiers: UInt32(cmdKey | shiftKey),
             description: "⌘⇧L"
         )
+        /// Control+Option+Cmd+S for a Listen screenshot. Not ⌘⇧3/4/5 (macOS's own
+        /// screenshots) and not ⌘⇧S (Save As in most apps).
+        public static let screenshot = Combo(
+            keyCode: UInt32(kVK_ANSI_S),
+            modifiers: UInt32(controlKey | optionKey | cmdKey),
+            description: "⌃⌥⌘S"
+        )
+        /// Stands in for `screenshot` when one of the other shortcuts already has it.
+        public static let screenshotAlternate = Combo(
+            keyCode: UInt32(kVK_ANSI_2),
+            modifiers: UInt32(controlKey | optionKey | cmdKey),
+            description: "⌃⌥⌘2"
+        )
         public static let f5 = Combo(keyCode: UInt32(kVK_F5), modifiers: 0, description: "F5")
     }
 
@@ -68,6 +81,23 @@ public final class HotkeyManager {
     public enum Id: UInt32, CaseIterable, Sendable {
         case dictation = 1
         case listen = 2
+        case screenshot = 3
+
+        /// The name Settings and the refusal sentences use.
+        public var label: String {
+            switch self {
+            case .dictation: return "Dictation"
+            case .listen: return "Listen"
+            case .screenshot: return "Screenshot"
+            }
+        }
+        public var defaultCombo: Combo {
+            switch self {
+            case .dictation: return .defaultCombo
+            case .listen: return .listen
+            case .screenshot: return .screenshot
+            }
+        }
     }
 
     public enum RegisterError: Error, Equatable {

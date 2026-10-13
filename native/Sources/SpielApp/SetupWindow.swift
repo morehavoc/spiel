@@ -24,6 +24,8 @@ final class SetupModel: ObservableObject {
     @Published var microphone: AudioCapture.MicrophoneAuthorization = .notDetermined
     @Published var accessibility = false
     @Published var notifications: SetupChecklist.Notifications = .notDetermined
+    /// Optional (2.7): only Listen screenshots need it, so it never counts in `remaining`.
+    @Published var screenRecording = false
     @Published var model: ModelState = .checking
     @Published var engine: EngineChoice = .unified
     @Published var shortcut = HotkeyManager.Combo.defaultCombo.description
@@ -33,6 +35,7 @@ final class SetupModel: ObservableObject {
     var requestMicrophone: () -> Void = {}
     var requestAccessibility: () -> Void = {}
     var requestNotifications: () -> Void = {}
+    var requestScreenRecording: () -> Void = {}
     var retryModel: () -> Void = {}
     var done: () -> Void = {}
 
@@ -70,6 +73,8 @@ struct SetupView: View {
                 accessibilityRow
                 Divider()
                 notificationsRow
+                Divider()
+                screenRecordingRow
                 Divider()
                 modelRow
                 Divider()
@@ -150,10 +155,19 @@ struct SetupView: View {
         }
     }
 
+    private var screenRecordingRow: some View {
+        StepRow(number: 4, title: "Screen Recording", status: model.screenRecording ? .done : .todo,
+                detail: model.screenRecording ? "" : "Optional. For screenshots in Listen.") {
+            if !model.screenRecording {
+                Button("Open Screen Recording Settings") { model.requestScreenRecording() }
+            }
+        }
+    }
+
     private var modelTitle: String { "Speech model" }
 
     private var modelRow: some View {
-        StepRow(number: 4, title: modelTitle, status: modelStatus, detail: modelDetail) {
+        StepRow(number: 5, title: modelTitle, status: modelStatus, detail: modelDetail) {
             switch model.model {
             case .failed, .fallback: Button("Retry") { model.retryModel() }
             default: EmptyView()
@@ -214,7 +228,7 @@ struct SetupView: View {
     }
 
     private var tryItRow: some View {
-        StepRow(number: 5, title: "Try it", status: .info, detail: tryItText) { EmptyView() }
+        StepRow(number: 6, title: "Try it", status: .info, detail: tryItText) { EmptyView() }
     }
     private var tryItText: String {
         if let problem = model.shortcutProblem { return "\(model.shortcut) isn't working: \(problem). Change it in Settings." }

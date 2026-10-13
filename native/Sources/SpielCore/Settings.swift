@@ -102,6 +102,11 @@ public enum HotkeyRules {
 
     /// nil = acceptable; otherwise the sentence shown under the field.
     public static func validate(_ combo: HotkeyManager.Combo, otherCombo: HotkeyManager.Combo?, otherName: String) -> String? {
+        validate(combo, others: otherCombo.map { [($0, otherName)] } ?? [])
+    }
+
+    /// Same rules, checked against every other Spiel shortcut (`(combo, name)`).
+    public static func validate(_ combo: HotkeyManager.Combo, others: [(HotkeyManager.Combo, String)]) -> String? {
         let mods = combo.modifiers
         let strong = UInt32(cmdKey | optionKey | controlKey)
         if mods & strong == 0 && !KeyNames.isFunctionKey(combo.keyCode) {
@@ -112,8 +117,8 @@ public enum HotkeyRules {
         if mods == UInt32(cmdKey) && reservedWithCommandOnly.contains(Int(combo.keyCode)) {
             return "\(combo.description) is a standard shortcut every app uses — pick another"
         }
-        if let otherCombo, combo.sameKeys(as: otherCombo) {
-            return "\(combo.description) is already the \(otherName) shortcut"
+        if let other = others.first(where: { combo.sameKeys(as: $0.0) }) {
+            return "\(combo.description) is already the \(other.1) shortcut"
         }
         return nil
     }
@@ -128,6 +133,7 @@ public struct SpielSettings {
 
     public static let dictationHotkeyKey = "DictationHotkey"
     public static let listenHotkeyKey = "ListenHotkey"
+    public static let screenshotHotkeyKey = "ScreenshotHotkey"
     public static let dictationModeKey = "DictationMode"
     public static let microphoneUIDKey = "MicrophoneUID"
     public static let microphoneNameKey = "MicrophoneName"
@@ -161,6 +167,17 @@ public struct SpielSettings {
             return c.sameKeys(as: dictationCombo) ? .listen : c
         }
         nonmutating set { setCombo(newValue.sameKeys(as: .listen) ? nil : newValue, Self.listenHotkeyKey) }
+    }
+    /// Same rule for Screenshot (2.7) against both others. If the default itself
+    /// is taken (Listen was moved to ⌃⌥⌘S before 2.7), ⌃⌥⌘2 stands in.
+    public var screenshotCombo: HotkeyManager.Combo {
+        get {
+            let taken = [dictationCombo, listenCombo]
+            let fallbacks = [HotkeyManager.Combo.screenshot, HotkeyManager.Combo.screenshotAlternate]
+            return ([combo(Self.screenshotHotkeyKey, fallback: .screenshot)] + fallbacks)
+                .first { c in !taken.contains { $0.sameKeys(as: c) } } ?? .screenshotAlternate
+        }
+        nonmutating set { setCombo(newValue.sameKeys(as: .screenshot) ? nil : newValue, Self.screenshotHotkeyKey) }
     }
     public var dictationMode: DictationMode {
         get { defaults.string(forKey: Self.dictationModeKey).flatMap(DictationMode.init(rawValue:)) ?? .toggle }

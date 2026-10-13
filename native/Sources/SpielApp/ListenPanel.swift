@@ -22,6 +22,7 @@ final class ListenPanel {
     var onPause: (() -> Void)?
     var onResume: (() -> Void)?
     var onStop: (() -> Void)?
+    var onScreenshot: (() -> Void)?
     var onCopy: (() -> Void)?
     var onOpen: (() -> Void)?
 
@@ -39,6 +40,7 @@ final class ListenPanel {
     private var newestPill: NSButton!
     private var pauseButton: NSButton!
     private var stopButton: NSButton!
+    private var screenshotButton: NSButton!
     private var copyButton: NSButton!
     private var openButton: NSButton!
     private var doneButton: NSButton!
@@ -77,6 +79,8 @@ final class ListenPanel {
         pauseButton.isHidden = false
         pauseButton.title = "Pause"
         stopButton.isHidden = false
+        screenshotButton.isHidden = false
+        screenshotButton.isEnabled = true
         copyButton.isHidden = true
         openButton.isHidden = true
         doneButton.isHidden = true
@@ -101,6 +105,7 @@ final class ListenPanel {
     func setFinishing() {
         pauseButton.isEnabled = false
         stopButton.isEnabled = false
+        screenshotButton.isEnabled = false
         counterLabel.stringValue = "Finishing…"
     }
 
@@ -117,6 +122,7 @@ final class ListenPanel {
         meter.isHidden = true
         pauseButton.isHidden = true
         stopButton.isHidden = true
+        screenshotButton.isHidden = true
         copyButton.isHidden = false
         copyButton.title = "Copy"
         openButton.isHidden = false
@@ -369,8 +375,13 @@ final class ListenPanel {
         openButton = Self.button("Open", target: self, action: #selector(openTapped))
         doneButton = Self.button("Done", target: self, action: #selector(doneTapped))
         stopButton.keyEquivalent = ""
+        let camera = NSImage(systemSymbolName: "camera", accessibilityDescription: "Take Screenshot") ?? NSImage()
+        screenshotButton = NSButton(image: camera, target: self, action: #selector(screenshotTapped))
+        screenshotButton.bezelStyle = .rounded
+        screenshotButton.controlSize = .small
+        screenshotButton.toolTip = "Take Screenshot"
 
-        for v in [title, bars, counter, summary, scroll, pill, pauseButton, stopButton, copyButton, openButton, doneButton] as [NSView] {
+        for v in [title, bars, counter, summary, scroll, pill, pauseButton, stopButton, screenshotButton, copyButton, openButton, doneButton] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -405,6 +416,8 @@ final class ListenPanel {
             pauseButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             stopButton.leadingAnchor.constraint(equalTo: pauseButton.trailingAnchor, constant: 8),
             stopButton.bottomAnchor.constraint(equalTo: pauseButton.bottomAnchor),
+            screenshotButton.leadingAnchor.constraint(equalTo: stopButton.trailingAnchor, constant: 8),
+            screenshotButton.centerYAnchor.constraint(equalTo: stopButton.centerYAnchor),
 
             copyButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: m),
             copyButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
@@ -455,6 +468,7 @@ final class ListenPanel {
         if pauseButton.title == "Pause" { onPause?() } else { onResume?() }
     }
     @objc private func stopTapped() { onStop?() }
+    @objc private func screenshotTapped() { onScreenshot?() }
     @objc private func copyTapped() { onCopy?() }
     @objc private func openTapped() { onOpen?() }
     @objc private func doneTapped() { hide() }

@@ -77,13 +77,38 @@ built-ins), `-q` quiet.
   duration_s, words}]`; `spiel transcripts show <n|name>` prints the markdown;
   `spiel history --json` → `[{date, app, words, text}]`, newest first.
 
+## Screenshots in Listen (2.7.0)
+
+While Listen is recording or paused, **⌃⌥⌘S** (or the camera button in the Listen panel,
+or menu → Take Screenshot) captures the display the mouse pointer is on, full screen.
+Spiel's own windows are left out of the shot by ScreenCaptureKit's content filter, so
+the panel does not flicker. Outside Listen the shortcut posts "Start Listen to add
+screenshots." and does nothing else.
+
+- The PNG goes in a folder beside the transcript, named after it:
+  `2026-09-11 1400 Board review/screenshot-12-34.png` (`-2`, `-3`… for two in the same
+  second). Mode 0600, folder 0700. Renaming the meeting moves the folder with the file.
+- The transcript gets `![Screenshot 12:34](2026-09-11%201400%20Board%20review/screenshot-12-34.png)`
+  at that offset, so any Markdown viewer shows it inline. The panel shows
+  `[12:34] Screenshot`. A sentence that started before the shot but was transcribed
+  after it still lands above it; a shot taken while paused is stamped with the pause
+  counted, below the `[paused …]` line. Copy (plain text) leaves screenshots out.
+- Needs Screen Recording (System Settings → Privacy & Security → Screen Recording).
+  The first shot asks for it; Setup has an optional Screen Recording step. macOS may
+  want Spiel reopened after the switch goes on. Without it the shot fails with a
+  notification and a menu line — it is never dropped silently.
+- Rebind in Settings → General → Shortcuts → Screenshot, same rules as the other two.
+  If Listen was already on ⌃⌥⌘S, Screenshot starts on ⌃⌥⌘2.
+- Local files only. Send Diagnostics includes no screenshot and no screenshot path:
+  log lines and report values that name one are blanked like transcript names.
+
 ## Settings, History, Diagnostics (2.4.0)
 
 **Settings…** (menu, ⌘, while the menu is open) has two tabs:
 
-- **General** — rebind the Dictation and Listen shortcuts (click the field, press the
+- **General** — rebind the Dictation, Listen and Screenshot shortcuts (click the field, press the
   combo; ⎋ cancels). A shortcut needs ⌘, ⌥ or ⌃ unless it is an F-key; bare-⌘
-  standards (⌘Q, ⌘C, ⌘V…) and the other hotkey's combo are refused with the reason
+  standards (⌘Q, ⌘C, ⌘V…) and another hotkey's combo are refused with the reason
   under the field; a combo Carbon will not register is refused with its reason and
   the previous one stays. Global hotkeys are released while a field is recording, so
   ⌘⇧D reaches the field instead of starting a dictation. "Use F5 Instead" in the menu
@@ -186,6 +211,7 @@ native/
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
 │   │   ├── TranscriptDocument.swift   # Listen transcript: paragraphs, markers, frontmatter (pure)
 │   │   ├── TranscriptStore.swift      # ~/Documents/Spiel/Transcripts, atomic saves
+│   │   ├── ScreenshotStore.swift      # Listen screenshots: folder beside the transcript, names, moves
 │   │   ├── HotkeyManager.swift        # Carbon global hotkeys (press + release), suspend for the recorder, failure surfaced
 │   │   ├── Settings.swift             # SpielSettings (defaults), key names, shortcut rules, engine choice
 │   │   ├── DictationHistory.swift     # last 50 dictations, search, 0600 atomic JSON
@@ -204,7 +230,9 @@ native/
 │   ├── SpielCLI/           # developer harness (spiel-cli)
 │   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live/replay/boost-eval
 │   │   ├── SelfTest.swift             # the only test harness (no XCTest here)
-│   │   └── SelfTest25.swift           # 2.5: spiel contract, formats, file pipeline, setup, installer
+│   │   ├── SelfTest25.swift           # 2.5: spiel contract, formats, file pipeline, setup, installer
+│   │   ├── SelfTest26.swift           # 2.6: license gate, release rules
+│   │   └── SelfTest27.swift           # 2.7: screenshot markers, files, shortcut, diagnostics
 │   └── SpielApp/           # menu-bar app
 │       ├── main.swift                 # AppDelegate, menu, dictation + Listen lifecycle
 │       ├── RecordingPanel.swift       # floating level-meter panel (dictation)
@@ -212,6 +240,7 @@ native/
 │       ├── SettingsWindow.swift       # SwiftUI Settings + the AppKit shortcut recorder field
 │       ├── HistoryWindow.swift        # SwiftUI History list
 │       ├── SetupWindow.swift          # first-run setup window
+│       ├── ScreenCapture.swift        # ScreenCaptureKit: display under the pointer → PNG
 │       └── Notifier.swift             # user-facing notifications
 └── scripts/bundle.sh       # → build/Spiel.app
 ```
@@ -227,7 +256,7 @@ updates): see [RELEASING.md](RELEASING.md). A source build has no license gate.
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 455/455 expected
+.build/release/spiel-cli selftest     # 573/573 expected
 ./scripts/bundle.sh release           # → build/Spiel.app (+ Contents/Helpers/spiel)
 ```
 

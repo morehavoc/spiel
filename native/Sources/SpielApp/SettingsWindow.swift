@@ -12,8 +12,10 @@ final class SettingsModel: ObservableObject {
 
     @Published var dictationCombo = HotkeyManager.Combo.defaultCombo
     @Published var listenCombo = HotkeyManager.Combo.listen
+    @Published var screenshotCombo = HotkeyManager.Combo.screenshot
     @Published var dictationHotkeyNote: String?
     @Published var listenHotkeyNote: String?
+    @Published var screenshotHotkeyNote: String?
     /// Which field is waiting for a keypress (global hotkeys are suspended meanwhile).
     @Published var recording: HotkeyManager.Id?
 
@@ -49,7 +51,18 @@ final class SettingsModel: ObservableObject {
     var clearHistory: () -> Void = {}
     var refresh: () -> Void = {}
 
-    func combo(_ id: HotkeyManager.Id) -> HotkeyManager.Combo { id == .dictation ? dictationCombo : listenCombo }
+    func combo(_ id: HotkeyManager.Id) -> HotkeyManager.Combo {
+        switch id {
+        case .dictation: return dictationCombo
+        case .listen: return listenCombo
+        case .screenshot: return screenshotCombo
+        }
+    }
+
+    /// Every other shortcut, for the duplicate check.
+    private func others(_ id: HotkeyManager.Id) -> [(HotkeyManager.Combo, String)] {
+        HotkeyManager.Id.allCases.filter { $0 != id }.map { (combo($0), $0.label) }
+    }
 
     func beginRecording(_ id: HotkeyManager.Id) {
         guard recording != id else { return }
@@ -70,11 +83,9 @@ final class SettingsModel: ObservableObject {
     /// visibly, rather than on the next launch.
     func recorded(_ id: HotkeyManager.Id, keyCode: UInt32, modifiers: UInt32) {
         let combo = HotkeyManager.Combo(keyCode: keyCode, modifiers: modifiers)
-        let other: HotkeyManager.Id = id == .dictation ? .listen : .dictation
         recording = nil
         setHotkeysSuspended(false)
-        if let why = HotkeyRules.validate(combo, otherCombo: self.combo(other),
-                                          otherName: other == .listen ? "Listen" : "Dictation") {
+        if let why = HotkeyRules.validate(combo, others: others(id)) {
             setNote(id, why)
             return
         }
@@ -83,9 +94,8 @@ final class SettingsModel: ObservableObject {
 
     func reset(_ id: HotkeyManager.Id) {
         cancelRecording()
-        let def: HotkeyManager.Combo = id == .dictation ? .defaultCombo : .listen
-        let other: HotkeyManager.Id = id == .dictation ? .listen : .dictation
-        if let why = HotkeyRules.validate(def, otherCombo: combo(other), otherName: other == .listen ? "Listen" : "Dictation") {
+        let def = id.defaultCombo
+        if let why = HotkeyRules.validate(def, others: others(id)) {
             setNote(id, "Can't reset: \(why).")
             return
         }
@@ -93,7 +103,11 @@ final class SettingsModel: ObservableObject {
     }
 
     private func setNote(_ id: HotkeyManager.Id, _ note: String?) {
-        if id == .dictation { dictationHotkeyNote = note } else { listenHotkeyNote = note }
+        switch id {
+        case .dictation: dictationHotkeyNote = note
+        case .listen: listenHotkeyNote = note
+        case .screenshot: screenshotHotkeyNote = note
+        }
     }
 
     // MARK: Vocabulary
@@ -154,6 +168,7 @@ private struct GeneralSettings: View {
             Section("Shortcuts") {
                 hotkeyRow("Dictation", id: .dictation, note: model.dictationHotkeyNote)
                 hotkeyRow("Listen", id: .listen, note: model.listenHotkeyNote)
+                hotkeyRow("Screenshot", id: .screenshot, note: model.screenshotHotkeyNote)
                 Picker("Dictation", selection: Binding(
                     get: { model.dictationMode },
                     set: { model.dictationMode = $0; model.setDictationMode($0) }
@@ -227,7 +242,7 @@ private struct GeneralSettings: View {
                 )
                 .frame(width: 210, height: 24)
                 Button("Reset") { model.reset(id) }
-                    .disabled(model.combo(id) == (id == .dictation ? .defaultCombo : .listen))
+                    .disabled(model.combo(id) == id.defaultCombo)
             }
             if let note {
                 Text(note).font(.callout).foregroundStyle(.red)

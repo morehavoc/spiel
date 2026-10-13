@@ -19,6 +19,10 @@ public struct TranscriptDocument: Sendable, Equatable {
         /// Marker lines (`[paused 4 min]`, `[input changed …]`, `[missed …]`) are
         /// their own paragraphs and never get speech glued onto them.
         public var isMarker: Bool
+        /// A screenshot marker (2.7): the PNG's file name inside the transcript's
+        /// screenshot folder. The folder is named after the transcript file, which
+        /// moves when the title changes, so it is supplied at render time.
+        public var image: String?
         /// Wall clock of the last append, for the panel's recency tint only.
         public var appendedAt: Date
         /// Raw (uncorrected) onset of the FIRST segment in this paragraph, for the
@@ -46,19 +50,41 @@ public struct TranscriptDocument: Sendable, Equatable {
     public mutating func append(text: String, startOffset: TimeInterval, gapBefore: TimeInterval, now: Date = Date()) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if let last = paragraphs.last, !last.isMarker,
+        let at = insertionIndex(forDisplayOffset: startOffset + pauseCorrection)
+        if let last = at > 0 ? paragraphs[at - 1] : nil, !last.isMarker,
            gapBefore < paragraphGap,
            startOffset - last.rawStart < monologueCap {
             var p = last
             p.text = TranscriptAssembler.tidy(p.text + " " + trimmed)
             p.appendedAt = now
-            paragraphs[paragraphs.count - 1] = p
+            paragraphs[at - 1] = p
         } else {
-            paragraphs.append(Paragraph(
+            paragraphs.insert(Paragraph(
                 offset: startOffset + pauseCorrection, text: TranscriptAssembler.tidy(trimmed),
                 isMarker: false, appendedAt: now, rawStart: startOffset
-            ))
+            ), at: at)
         }
+    }
+
+    /// Where speech starting at `displayOffset` goes: before any trailing
+    /// screenshots taken after it. A segment is released a second or more after
+    /// its onset (longer for a long sentence), so a screenshot taken mid-sentence
+    /// is already in the document when that sentence arrives.
+    private func insertionIndex(forDisplayOffset displayOffset: TimeInterval) -> Int {
+        var i = paragraphs.count
+        while i > 0, paragraphs[i - 1].image != nil, paragraphs[i - 1].offset > displayOffset { i -= 1 }
+        return i
+    }
+
+    /// A screenshot taken at raw audio offset `atOffset`. `pausedFor` is how long
+    /// the current pause has run (0 when not paused): the audio counter stands
+    /// still during a pause, and the pause itself is booked only when it ends.
+    public mutating func addScreenshot(file: String, atOffset: TimeInterval, pausedFor: TimeInterval = 0, now: Date = Date()) {
+        let offset = atOffset + pauseCorrection + max(0, pausedFor)
+        var p = Paragraph(offset: offset, text: "[\(Self.formatOffset(offset))] Screenshot", isMarker: true,
+                          appendedAt: now, rawStart: atOffset)
+        p.image = file
+        paragraphs.append(p)
     }
 
     /// Capture was paused for `seconds`, at raw audio offset `atOffset`. Later
@@ -82,9 +108,13 @@ public struct TranscriptDocument: Sendable, Equatable {
                   rawOffset: atOffset, now: now)
     }
 
+    /// Markers go at the end, except before trailing screenshots that are later
+    /// than them — a pause marker is booked when the pause ENDS, after any
+    /// screenshot taken during it.
     private mutating func addMarker(_ text: String, rawOffset: TimeInterval, now: Date) {
-        paragraphs.append(Paragraph(offset: rawOffset + pauseCorrection, text: text, isMarker: true,
-                                    appendedAt: now, rawStart: rawOffset))
+        let offset = rawOffset + pauseCorrection
+        paragraphs.insert(Paragraph(offset: offset, text: text, isMarker: true, appendedAt: now, rawStart: rawOffset),
+                          at: insertionIndex(forDisplayOffset: offset))
     }
 
     // MARK: - Reading
@@ -103,11 +133,15 @@ public struct TranscriptDocument: Sendable, Equatable {
     }
 
     /// The transcript without frontmatter, for Copy. `plain: true` drops the
-    /// `[MM:SS]` prefixes and marker lines — text only.
-    public func body(plain: Bool = false) -> String {
+    /// `[MM:SS]` prefixes and marker lines — text only. `screenshots` is the name
+    /// of the screenshot folder beside the transcript file (see `ScreenshotStore`).
+    public func body(plain: Bool = false, screenshots: String = "") -> String {
         let lines: [String] = paragraphs.compactMap { p in
             if plain {
                 return p.isMarker ? nil : p.text
+            }
+            if let image = p.image {
+                return Self.imageLine(offset: p.offset, folder: screenshots, file: image)
             }
             return p.isMarker ? p.text : "[\(Self.formatOffset(p.offset))] \(p.text)"
         }
@@ -130,7 +164,7 @@ public struct TranscriptDocument: Sendable, Equatable {
     /// The whole file: YAML frontmatter (the hand-off doc's §2c, verbatim keys) and
     /// the body. `started`/`ended` are ISO 8601 WITH offset — a receiver keys on
     /// them, and naive local time is ambiguous twice a year.
-    public func render(frontmatter f: Frontmatter) -> String {
+    public func render(frontmatter f: Frontmatter, screenshots: String = "") -> String {
         let duration = max(0, Int(f.endedAt.timeIntervalSince(f.startedAt).rounded()))
         var out = "---\n"
         out += "app: Spiel\n"
@@ -145,9 +179,24 @@ public struct TranscriptDocument: Sendable, Equatable {
         out += "input_device: \(Self.yaml(f.inputDevice))\n"
         out += "engine: \(Self.yaml(f.engine))\n"
         out += "---\n\n"
-        out += body()
+        out += body(screenshots: screenshots)
         out += "\n"
         return out
+    }
+
+    /// `![Screenshot 12:34](2026-09-11%201400%20Board%20review/screenshot-12-34.png)`:
+    /// an inline image in any Markdown viewer, relative to the transcript file.
+    public static func imageLine(offset: TimeInterval, folder: String, file: String) -> String {
+        let path = folder.isEmpty ? file : folder + "/" + file
+        return "![Screenshot \(formatOffset(offset))](\(encodePath(path)))"
+    }
+
+    /// Percent-encodes everything but unreserved characters and `/`. Spaces and
+    /// parentheses would end a Markdown link early; non-ASCII titles encode as UTF-8.
+    public static func encodePath(_ path: String) -> String {
+        var allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        allowed.insert(charactersIn: "-._~/")
+        return path.addingPercentEncoding(withAllowedCharacters: allowed) ?? path
     }
 
     /// Parses the frontmatter `render` wrote. Returns the key/value map and the
