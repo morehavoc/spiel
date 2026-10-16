@@ -11,8 +11,8 @@
 #   APPLE_API_ISSUER            its issuer id
 #   APPLE_API_KEY               base64 of AuthKey_<id>.p8
 #   SPARKLE_PRIVATE_KEY         the Sparkle EdDSA private key (signs the appcast)
-#   GUMROAD_PRODUCT_ID          the Spiel product's id (license check)
-#   SPIEL_PURCHASE_URL          the Gumroad product page
+#   GUMROAD_PRODUCT_ID          the Spiel product's id (license check)   } optional: without both,
+#   SPIEL_PURCHASE_URL          the Gumroad product page                  } the build has no license gate
 name: Release
 
 on:
@@ -60,10 +60,13 @@ jobs:
         run: |
           set -uo pipefail
           missing=""
-          for n in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY SPARKLE_PRIVATE_KEY GUMROAD_PRODUCT_ID SPIEL_PURCHASE_URL; do
+          for n in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_API_KEY SPARKLE_PRIVATE_KEY; do
             [ -z "${!n:-}" ] && missing="$missing $n"
           done
           if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing. Nothing was built."; exit 1; fi
+          if [ -z "${GUMROAD_PRODUCT_ID:-}" ] || [ -z "${SPIEL_PURCHASE_URL:-}" ]; then
+            echo "::warning::GUMROAD_PRODUCT_ID / SPIEL_PURCHASE_URL not both set: building WITHOUT the license gate."
+          fi
 
       - name: Selftest
         working-directory: native
@@ -111,6 +114,7 @@ jobs:
           export SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle.key"
           printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_FILE"
           unset APPLE_API_KEY SPARKLE_PRIVATE_KEY
+          if [ -z "$SPIEL_GUMROAD_PRODUCT_ID" ] || [ -z "$SPIEL_PURCHASE_URL" ]; then export SPIEL_NO_LICENSE=1; fi
           scripts/release.sh --ci
 
       - name: Clean up keys

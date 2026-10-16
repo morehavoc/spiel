@@ -110,7 +110,13 @@ fi
 
 # ---------------------------------------------------------------------------------
 step "Gumroad product"
-if [ "$DRY" = 1 ]; then
+# SPIEL_NO_LICENSE=1: a signed, notarized build with no license gate (no Gumroad product yet).
+LICENSED=1
+if [ "${SPIEL_NO_LICENSE:-}" = "1" ]; then
+  LICENSED=0
+  PRODUCT_ID=""
+  PURCHASE_URL=""
+elif [ "$DRY" = 1 ]; then
   PRODUCT_ID="${SPIEL_GUMROAD_PRODUCT_ID:-dry-run-product-id}"
   PURCHASE_URL="${SPIEL_PURCHASE_URL:-https://example.invalid/spiel}"
 else
@@ -119,7 +125,7 @@ else
   PRODUCT_ID="$SPIEL_GUMROAD_PRODUCT_ID"
   PURCHASE_URL="$SPIEL_PURCHASE_URL"
 fi
-echo "product id $PRODUCT_ID, purchase URL $PURCHASE_URL"
+if [ "$LICENSED" = 1 ]; then echo "product id $PRODUCT_ID, purchase URL $PURCHASE_URL"; else echo "no license gate (SPIEL_NO_LICENSE=1)"; fi
 
 # ---------------------------------------------------------------------------------
 step "signing identity"
@@ -177,12 +183,19 @@ PLIST_PUB="$(grep -A1 '<key>SUPublicEDKey</key>' scripts/bundle.sh | sed -n 's/.
 echo "signing key matches SUPublicEDKey $PLIST_PUB (${KEY_ARGS[0]} ${KEY_ARGS[1]})"
 
 # ---------------------------------------------------------------------------------
+if [ "$LICENSED" = 1 ]; then
 step "build (OFFICIAL_BUILD)"
 SPIEL_OFFICIAL_BUILD=1 SPIEL_SKIP_SIGN=1 SPIEL_GUMROAD_PRODUCT_ID="$PRODUCT_ID" SPIEL_PURCHASE_URL="$PURCHASE_URL" \
   "$ROOT/scripts/bundle.sh" release
 v="$("$APP/Contents/Helpers/spiel" --version)"
 [[ "$v" == *", official)"* ]] || die "the build is not an official build: '$v'"
 [ "$(plutil -extract SpielGumroadProductID raw "$APP/Contents/Info.plist")" = "$PRODUCT_ID" ] || die "Info.plist has the wrong product id"
+else
+step "build (no license gate)"
+SPIEL_SKIP_SIGN=1 "$ROOT/scripts/bundle.sh" release
+v="$("$APP/Contents/Helpers/spiel" --version)"
+[[ "$v" != *", official)"* ]] || die "SPIEL_NO_LICENSE=1 but the build has the license gate: '$v'"
+fi
 echo "$v"
 
 # ---------------------------------------------------------------------------------
