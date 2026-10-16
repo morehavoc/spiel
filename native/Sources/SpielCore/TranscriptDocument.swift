@@ -244,7 +244,7 @@ public struct TranscriptDocument: Sendable, Equatable {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone.current
-        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxxxx"  // xxxxx: +00:00 in UTC, never "Z"
         return f.string(from: d)
     }
 
