@@ -333,12 +333,17 @@ final class ListenPanel {
         summaryLabel = summary
 
         // Body ------------------------------------------------------------
-        let scroll = NSScrollView(frame: .zero)
+        // The scroll view starts at its final width (the panel width less the 10 pt
+        // margins the constraints below give it). A text view's flexible-width
+        // autoresizing keeps its margin to the clip view, so creating it wider than a
+        // zero-size clip view left it 348 pt wider than the panel once layout ran:
+        // lines ran off the right edge instead of wrapping.
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: Self.width - 20, height: 100))
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
-        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: Self.width - 32, height: 100))
+        let tv = NSTextView(frame: NSRect(origin: .zero, size: scroll.contentSize))
         tv.isEditable = false
         tv.isSelectable = true
         tv.drawsBackground = false
@@ -348,7 +353,9 @@ final class ListenPanel {
         tv.isHorizontallyResizable = false
         tv.autoresizingMask = [.width]
         tv.textContainer?.widthTracksTextView = true
-        tv.textContainer?.containerSize = NSSize(width: Self.width - 32, height: .greatestFiniteMagnitude)
+        tv.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: .greatestFiniteMagnitude)
         tv.font = Self.bodyFont
         scroll.documentView = tv
         textView = tv
