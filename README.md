@@ -38,5 +38,4 @@ Install it from the Spiel menu: Help → Install Command Line Tool.
 
 GPL-3.0. See [LICENSE](LICENSE) and [third-party notices](native/THIRD_PARTY_NOTICES.md).
 
-The original Electron version of Spiel, which used OpenAI's Whisper API, is still in
-`electron/` and `src/`.
+The original Electron version of Spiel (OpenAI Whisper) is in git history.

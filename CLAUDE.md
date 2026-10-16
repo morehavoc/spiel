@@ -1,78 +1,14 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Spiel is a native Swift (SwiftPM) macOS menu-bar dictation app. All code lives in `native/`;
+transcription runs on the Mac (Parakeet on the Neural Engine via FluidAudio, Apple
+`SpeechAnalyzer` as a fallback). No network or API key is needed to dictate.
 
-> **v2 lives in `native/` and is a different app.** Branch `v2-native` holds a native
-> Swift menu-bar rewrite with **fully local** transcription (Parakeet TDT on the Neural
-> Engine via FluidAudio, Apple `SpeechAnalyzer` as fallback) — no OpenAI, no network,
-> no API key. Everything below this line describes the **Electron/Whisper v1** app in
-> `electron/` and `src/`, which is untouched by v2. For v2 see `native/README.md`; its
-> test harness is `spiel-cli selftest`, not `npm test`.
+- What it does and how it is laid out: `native/README.md`
+- Releasing (GitHub Actions, Developer ID, notarization, Sparkle): `native/RELEASING.md`
+- Build a dev app: `native/scripts/bundle.sh release` → `native/build/Spiel.app`
+- Tests: `cd native && swift build -c release --product spiel-cli && .build/release/spiel-cli selftest`
+- The version lives only in `native/Sources/SpielCore/Version.swift` (`build` must grow every release)
 
-## Project Overview
-
-Spiel is a macOS desktop app for voice-to-text dictation using OpenAI's Whisper API. Users press a hotkey, speak naturally, see real-time transcription with optional AI cleanup, and have text automatically inserted into any active application.
-
-**Status**: Implemented and functional.
-
-## Build Commands
-
-```bash
-npm install              # Install dependencies
-npm run electron:dev     # Development with hot reload (Vite + Electron)
-npm run dev              # Vite dev server only
-npm run build:mac        # Production build for macOS
-npm run typecheck        # TypeScript type checking
-```
-
-Output: `release/` directory with `.dmg` installer
-
-## Architecture
-
-### Electron IPC Pattern
-
-- **Main process** (`electron/main.ts`): Handles system-level tasks (global hotkeys via Electron's `globalShortcut`, clipboard, window management, API calls)
-- **Renderer process** (`src/`): React 18 + Zustand for UI and state
-- **Preload bridge** (`electron/preload.ts`): Context-isolated IPC between main and renderer
-
-### Core Services (electron/services/)
-
-| Service | Purpose |
-|---------|---------|
-| `hotkeyManager.ts` | Global hotkey (Cmd+\\, F5, or custom) via Electron's globalShortcut |
-| `audioRecorder.ts` | MediaRecorder in renderer, sends chunks to main via IPC |
-| `vadProcessor.ts` | Amplitude-based silence detection (~900ms threshold) |
-| `whisperApi.ts` | OpenAI Whisper API client |
-| `aiCleanup.ts` | Optional GPT-4o-mini post-processing |
-| `textInserter.ts` | Clipboard + Cmd+V paste or character-by-character typing |
-| `windowManager.ts` | Tray icon, frameless floating bar, settings window |
-
-### Key Technical Decisions
-
-- Audio: 16000 Hz sample rate, WebM/Opus format (Whisper standard)
-- VAD sends chunks on ~900ms silence, minimum 500ms speech
-- API key encrypted via Electron's `safeStorage`
-- Text insertion saves/restores clipboard content
-- Context isolation enabled, nodeIntegration disabled
-
-### IPC Channels
-
-```
-Main → Renderer: recording:state-change, recording:transcript-update, recording:waveform-data
-Renderer → Main: recording:toggle, settings:get, settings:set, audio:chunk
-```
-
-## Dependencies
-
-- `robotjs` for simulating keyboard (Cmd+V paste)
-- `electron-store` for persistent settings
-- `openai` SDK for Whisper and GPT-4o-mini
-
-## macOS Requirements
-
-The app requires entitlements for:
-- Microphone access
-- AppleEvents (for text insertion into other apps)
-- JIT compilation
-
-See `build/entitlements.mac.plist` in the design spec.
+The original Electron app (v1, OpenAI Whisper) was removed in 2026-10; it is in git history
+before that commit.
