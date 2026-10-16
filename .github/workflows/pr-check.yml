@@ -1,0 +1,37 @@
+# Every pull request: typecheck, production build, and the native selftest the release workflow runs,
+# so a PR shows pass/fail before it is merged. No secrets, no signing, nothing published.
+name: PR check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26 # SpeechAnalyzer needs the macOS 26 SDK
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and build
+        run: npm run build
+      - name: Selftest
+        working-directory: native
+        run: |
+          swift build -c release --product spiel-cli
+          .build/release/spiel-cli selftest
+      - name: npm audit (report only; the weekly review compares it to main)
+        run: npm audit --omit=dev || true
