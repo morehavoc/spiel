@@ -3,7 +3,6 @@ node_modules/
 
 # Build outputs
 dist/
-dist-electron/
 release/
 
 # Logs
@@ -46,10 +45,6 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
-
-# Electron builder cache
-.cache/
-electron-builder.env
 
 # Optional npm cache
 .npm/
