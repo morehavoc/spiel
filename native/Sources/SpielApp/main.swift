@@ -1120,7 +1120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let state = license, let line = LicensePolicy.menuLine(LicensePolicy.status(state, now: Date())) {
                 add(line).isEnabled = false
             }
-            _ = add("Enter License Key…", #selector(showLicenseFromMenu))
+            let licensed = license.map { LicensePolicy.status($0, now: Date()) == .licensed } ?? false
+            _ = add(licensed ? "License…" : "Enter License Key…", #selector(showLicenseFromMenu))
         }
         _ = add("Check for Updates…", #selector(SPUStandardUpdaterController.checkForUpdates(_:)), target: updater)
 
@@ -1970,6 +1971,7 @@ extension AppDelegate {
             if let url = self?.purchaseURL { NSWorkspace.shared.open(url) }
         }
         licenseModel.activate = { [weak self] in self?.activateLicense() }
+        licenseModel.close = { [weak self] in self?.licenseWindow?.performClose(nil) }
         // Polled every 6 h; `revalidationDue` holds the actual check to weekly.
         licenseTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.revalidateLicenseIfDue() }
@@ -1992,6 +1994,8 @@ extension AppDelegate {
     @objc fileprivate func showLicenseFromMenu() { showLicense() }
 
     fileprivate func showLicense() {
+        licenseModel.changingKey = false
+        licenseModel.message = nil
         refreshLicenseModel()
         let window = licenseWindow ?? makeWindow(title: "License", view: LicenseView(model: licenseModel),
                                                  size: NSSize(width: 400, height: 150), autosave: "SpielLicense")
@@ -2026,6 +2030,7 @@ extension AppDelegate {
                 self.license = next
                 self.saveLicense(next)
                 self.licenseModel.key = ""
+                self.licenseModel.changingKey = false
                 DiagnosticLog.write("license activated: \(next.maskedKey)")
             case .failure(let error):
                 self.licenseModel.message = error.message
