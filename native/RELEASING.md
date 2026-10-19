@@ -44,7 +44,9 @@ it. Keep a copy in 1Password; never commit it or put it on the NAS.
 3. The workflow attaches `Spiel-<version>.dmg` and `appcast.xml`. Sparkle reads
    `releases/latest/download/appcast.xml`, so the newest non-prerelease release is the
    one every copy updates to (for the few minutes before the files land, the feed 404s
-   and copies just check again later).
+   and copies just check again later). It also attaches the same DMG as `Spiel.dmg`, so
+   `https://github.com/morehavoc/spiel/releases/latest/download/Spiel.dmg` is always the
+   newest version; the Gumroad purchase page links there instead of hosting a file.
 
 ### Locally
 

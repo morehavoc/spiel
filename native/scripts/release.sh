@@ -319,14 +319,20 @@ echo "$SHARED/$SHARED_NAME"
 fi
 
 # ---------------------------------------------------------------------------------
+# A second copy named Spiel.dmg, so .../releases/latest/download/Spiel.dmg always
+# points at the newest version (the Gumroad purchase page links to it). The appcast
+# keeps pointing at the versioned name.
+LATEST_DMG="$WORK/Spiel.dmg"
+cp "$DMG" "$LATEST_DMG"
+
 if [ "$CI_MODE" = 1 ]; then
   step "upload to the $TAG release"
-  gh release upload "$TAG" "$DMG" "$APPCAST" --repo "$REPO" --clobber
+  gh release upload "$TAG" "$DMG" "$LATEST_DMG" "$APPCAST" --repo "$REPO" --clobber
 elif [ "$PUBLISH" = 1 ]; then
   step "publish $TAG"
   git tag -a "$TAG" -m "Spiel $VERSION (build $BUILD)"
   git push origin "$TAG"
-  gh release create "$TAG" "$DMG" "$APPCAST" --repo "$REPO" --verify-tag --latest \
+  gh release create "$TAG" "$DMG" "$LATEST_DMG" "$APPCAST" --repo "$REPO" --verify-tag --latest \
     --title "Spiel $VERSION" --notes "Spiel $VERSION (build $BUILD)"
 else
   step "not published (run with --publish to tag $TAG and create the GitHub release)"

@@ -2,6 +2,6 @@
 /// file into Info.plist, and `spiel --version` prints them, so the app and the
 /// command-line tool can never disagree about which build they are.
 public enum SpielVersion {
-    public static let short = "2.7.1"
-    public static let build = "10"
+    public static let short = "2.7.2"
+    public static let build = "11"
 }
