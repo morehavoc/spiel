@@ -13,7 +13,7 @@ public enum TranscriptStore {
     /// `~/Documents/Spiel/Transcripts`. A constant, not a setting: the folder
     /// preference is the hand-off doc's and is not added here.
     public static var defaultFolder: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        SpielPaths.home
             .appendingPathComponent("Documents", isDirectory: true)
             .appendingPathComponent("Spiel", isDirectory: true)
             .appendingPathComponent("Transcripts", isDirectory: true)

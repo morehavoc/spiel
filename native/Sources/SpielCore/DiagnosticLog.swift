@@ -21,7 +21,7 @@ public enum DiagnosticLog {
     nonisolated(unsafe) public static var url: URL = defaultURL
 
     public static let defaultURL: URL = {
-        let logs = FileManager.default.homeDirectoryForCurrentUser
+        let logs = SpielPaths.home
             .appendingPathComponent("Library/Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         return logs.appendingPathComponent("Spiel.log")
