@@ -14,6 +14,9 @@ public final class AudioCapture: @unchecked Sendable {
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
                                        channels: 1, interleaved: false)!
     private(set) public var isRunning = false
+    /// Whether the mic engine (not the debug file feed) is what's running. Touching
+    /// `inputNode` initialises the hardware, so stop() must not do it for a feed.
+    private var engineStarted = false
 
     public init() {}
 
@@ -79,6 +82,7 @@ public final class AudioCapture: @unchecked Sendable {
             throw CaptureError.engine("\(error)")
         }
         isRunning = true
+        engineStarted = true
     }
 
     #if DEBUG
@@ -127,8 +131,11 @@ public final class AudioCapture: @unchecked Sendable {
         feeder?.cancel(); feeder = nil
         #endif
         guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        if engineStarted {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engineStarted = false
+        }
         isRunning = false
     }
 

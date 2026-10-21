@@ -24,6 +24,11 @@ final class ListenModel: ObservableObject {
     @Published private(set) var lastError: String?
     /// Bumped on every document change, so the view can follow the newest line.
     @Published private(set) var revision = 0
+    /// Mic loudness 0…1, ~12 updates a second, for the live waveform.
+    @Published private(set) var level: Float = 0
+    @Published private(set) var location: String?
+    /// The kept recording, when this meeting keeps audio.
+    @Published private(set) var audioURL: URL?
 
     private var session: DictationSession?
     private let capture = AudioCapture()
@@ -34,6 +39,8 @@ final class ListenModel: ObservableObject {
     private var consecutiveFailures = 0
     private var observers: [NSObjectProtocol] = []
     private var interrupted = false
+    private var recorder: AudioRecorder?
+    private let meter = LevelMeter()
 
     var isActive: Bool { phase == .recording || phase == .paused }
 
@@ -71,7 +78,12 @@ final class ListenModel: ObservableObject {
         session = s
         phase = .ready
         #if DEBUG
-        if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" { start() }
+        if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
+            start(title: "Design review", location: "Workshop, Portland", keepAudio: true)
+            if let secs = Double(ProcessInfo.processInfo.environment["SPIEL_AUTOSTOP"] ?? "") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + secs) { MainActor.assumeIsolated { self.stop() } }
+            }
+        }
         #endif
     }
 
@@ -81,7 +93,7 @@ final class ListenModel: ObservableObject {
 
     // MARK: - Controls
 
-    func start() {
+    func start(title: String, location: String?, keepAudio: Bool) {
         guard phase == .ready, let session else { return }
         Task {
             guard await AVAudioApplication.requestRecordPermission() else {
@@ -92,13 +104,29 @@ final class ListenModel: ObservableObject {
             await session.reset()
             doc = TranscriptDocument()
             revision += 1
-            startedAt = Date()
+            let started = Date()
+            startedAt = started
             endedAt = nil
             fileURL = nil
+            self.title = title.isEmpty ? Self.dateTitle(started) : title
+            self.location = location
+            audioURL = nil
+            recorder = nil
+            if keepAudio {
+                // Named once at start and never renamed, so the transcript's `audio:`
+                // line keeps pointing at it even if the title is edited later.
+                let name = String(TranscriptStore.fileName(title: self.title, startedAt: started).dropLast(3)) + ".m4a"
+                let url = TranscriptStore.defaultFolder.appendingPathComponent(name)
+                do {
+                    recorder = try AudioRecorder(url: url)
+                    audioURL = url
+                } catch {
+                    lastError = "Audio won't be kept: \(error.localizedDescription). The transcript still works."
+                }
+            }
             pausedTotal = 0
             consecutiveFailures = 0
             lastError = nil
-            if title.isEmpty { title = "Meeting" }
             guard openMic(into: session) else { return }
             phase = .recording
             UIApplication.shared.isIdleTimerDisabled = true
@@ -114,6 +142,7 @@ final class ListenModel: ObservableObject {
         capture.stop()
         pausedAt = Date()
         phase = .paused
+        level = 0
     }
 
     func resume() {
@@ -129,7 +158,12 @@ final class ListenModel: ObservableObject {
         phase = .ready
         autosave?.invalidate(); autosave = nil
         UIApplication.shared.isIdleTimerDisabled = false
+        meter.reset(); level = 0
+        let rec = recorder
+        recorder = nil
         Task {
+            await Task.detached { rec?.finish() }.value
+            if let e = rec?.error { lastError = "The recording stopped early: \(e)" }
             let report = await session.finishWithReport()
             endedAt = report.endedAt
             if !report.errors.isEmpty { DiagnosticLog.write("listen ended with errors: \(report.diagnosis)") }
@@ -140,8 +174,16 @@ final class ListenModel: ObservableObject {
 
     private func openMic(into session: DictationSession) -> Bool {
         let sink = session.sink
+        let rec = recorder
+        let meter = self.meter
         do {
-            try capture.start { samples in sink.submit(samples) }
+            try capture.start { samples in
+                sink.submit(samples)
+                rec?.append(samples)
+                if let l = meter.feed(samples) {
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.level = l } }
+                }
+            }
             return true
         } catch {
             lastError = "\(error)"
@@ -197,7 +239,8 @@ final class ListenModel: ObservableObject {
         let fm = TranscriptDocument.Frontmatter(
             title: title, startedAt: startedAt, endedAt: endedAt ?? Date(),
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev") (iPhone)",
-            inputDevice: AudioCapture.currentInputName, engine: "parakeet-tdt-0.6b-v3")
+            inputDevice: AudioCapture.currentInputName, engine: "parakeet-tdt-0.6b-v3",
+            location: location, audio: audioURL?.lastPathComponent)
         do {
             try TranscriptStore.save(doc.render(frontmatter: fm), to: url, replacing: fileURL)
             fileURL = url
@@ -205,6 +248,10 @@ final class ListenModel: ObservableObject {
             lastError = "Autosave failed: \(error). Copy the text before closing."
             DiagnosticLog.write("autosave failed: \(error)")
         }
+    }
+
+    static func dateTitle(_ d: Date) -> String {
+        d.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
     }
 
     /// Elapsed wall time of the session, pauses included.
@@ -254,4 +301,25 @@ final class ListenModel: ObservableObject {
             }
         })
     }
+}
+
+
+/// RMS of the incoming 16 kHz samples, reported every ~80 ms, scaled so speech
+/// at arm's length fills most of the meter. Called on the audio thread.
+final class LevelMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sum: Float = 0
+    private var count = 0
+    func feed(_ s: [Float]) -> Float? {
+        lock.lock(); defer { lock.unlock() }
+        for x in s { sum += x * x }
+        count += s.count
+        guard count >= 1280 else { return nil }
+        let rms = (sum / Float(count)).squareRoot()
+        sum = 0; count = 0
+        // ~-50 dBFS → 0, ~-10 dBFS → 1
+        let db = 20 * log10(max(rms, 1e-6))
+        return min(1, max(0, (db + 50) / 40))
+    }
+    func reset() { lock.lock(); sum = 0; count = 0; lock.unlock() }
 }

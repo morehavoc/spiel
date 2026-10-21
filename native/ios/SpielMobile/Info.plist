@@ -22,6 +22,10 @@
 	<string>1</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>When you turn on Add location, Spiel notes where the meeting happened in the transcript.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Spiel listens to the meeting you are in and writes it down. Audio never leaves this iPhone.</string>
 	<key>UIBackgroundModes</key>
