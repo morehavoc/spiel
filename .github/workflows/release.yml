@@ -57,6 +57,7 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           GUMROAD_PRODUCT_ID: ${{ secrets.GUMROAD_PRODUCT_ID }}
           SPIEL_PURCHASE_URL: ${{ secrets.SPIEL_PURCHASE_URL }}
+          SPIEL_UNLICENSED: ${{ vars.SPIEL_UNLICENSED }}
         run: |
           set -uo pipefail
           missing=""
@@ -64,8 +65,15 @@ jobs:
             [ -z "${!n:-}" ] && missing="$missing $n"
           done
           if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing. Nothing was built."; exit 1; fi
-          if [ -z "${GUMROAD_PRODUCT_ID:-}" ] || [ -z "${SPIEL_PURCHASE_URL:-}" ]; then
-            echo "::warning::GUMROAD_PRODUCT_ID / SPIEL_PURCHASE_URL not both set: building WITHOUT the license gate."
+          # Fail closed: an empty Gumroad secret (deleted, renamed, mistyped) must not
+          # quietly publish a build with no license check, which Sparkle then pushes to
+          # every install. Building without the gate takes the explicit repository
+          # variable SPIEL_UNLICENSED=true.
+          if [ "${SPIEL_UNLICENSED:-}" = "true" ]; then
+            echo "::warning::SPIEL_UNLICENSED=true: building WITHOUT the license gate."
+          elif [ -z "${GUMROAD_PRODUCT_ID:-}" ] || [ -z "${SPIEL_PURCHASE_URL:-}" ]; then
+            echo "::error::GUMROAD_PRODUCT_ID or SPIEL_PURCHASE_URL is empty. Nothing was built. To release without the license gate on purpose, set the repository variable SPIEL_UNLICENSED=true."
+            exit 1
           fi
 
       - name: Selftest
@@ -107,6 +115,7 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           SPIEL_GUMROAD_PRODUCT_ID: ${{ secrets.GUMROAD_PRODUCT_ID }}
           SPIEL_PURCHASE_URL: ${{ secrets.SPIEL_PURCHASE_URL }}
+          SPIEL_UNLICENSED: ${{ vars.SPIEL_UNLICENSED }}
         run: |
           set -euo pipefail
           export NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_$NOTARY_KEY_ID.p8"
@@ -114,7 +123,7 @@ jobs:
           export SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle.key"
           printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_FILE"
           unset APPLE_API_KEY SPARKLE_PRIVATE_KEY
-          if [ -z "$SPIEL_GUMROAD_PRODUCT_ID" ] || [ -z "$SPIEL_PURCHASE_URL" ]; then export SPIEL_NO_LICENSE=1; fi
+          if [ "${SPIEL_UNLICENSED:-}" = "true" ]; then export SPIEL_NO_LICENSE=1; fi
           scripts/release.sh --ci
 
       - name: Clean up keys
