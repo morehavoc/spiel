@@ -257,7 +257,7 @@ updates): see [RELEASING.md](RELEASING.md). A source build has no license gate.
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 587/587 expected
+.build/release/spiel-cli selftest     # 589/589 expected
 ./scripts/bundle.sh release           # → build/Spiel.app (+ Contents/Helpers/spiel)
 ```
 
