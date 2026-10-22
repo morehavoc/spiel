@@ -400,8 +400,9 @@ final class ListenPanel {
 
             bars.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
             bars.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: m),
-            bars.widthAnchor.constraint(equalToConstant: 84),
-            bars.heightAnchor.constraint(equalToConstant: 16),
+            // 108×22 (was 84×16), so the bars read at a glance from across a desk.
+            bars.widthAnchor.constraint(equalToConstant: 108),
+            bars.heightAnchor.constraint(equalToConstant: 22),
 
             counter.centerYAnchor.constraint(equalTo: bars.centerYAnchor),
             counter.leadingAnchor.constraint(equalTo: bars.trailingAnchor, constant: 10),

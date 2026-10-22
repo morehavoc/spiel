@@ -206,6 +206,7 @@ native/
 │   │   ├── AppleSpeechTranscriber.swift # macOS 26 SpeechAnalyzer
 │   │   ├── AudioCapture.swift         # AVAudioEngine → 16 kHz mono float; CoreAudio input list + device pick
 │   │   ├── AudioSink.swift            # order-preserving, re-armable audio handoff
+│   │   ├── LevelMeter.swift           # level-bar height: a dB window that follows the input
 │   │   ├── VoiceActivityDetector.swift # energy-based speech gate
 │   │   ├── DictationSession.swift     # VAD → segment → transcribe → assemble (+ timing on events)
 │   │   ├── TranscriptAssembler.swift  # speech-order reassembly
@@ -228,7 +229,7 @@ native/
 │   │   └── Version.swift              # the version (bundle.sh + spiel --version read it)
 │   ├── SpielTool/main.swift  # the user-facing `spiel` command (product spiel-tool)
 │   ├── SpielCLI/           # developer harness (spiel-cli)
-│   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live/replay/boost-eval
+│   │   ├── main.swift                 # selftest/doctor/glossary/transcribe/live/replay/boost-eval/meter-eval
 │   │   ├── SelfTest.swift             # the only test harness (no XCTest here)
 │   │   ├── SelfTest25.swift           # 2.5: spiel contract, formats, file pipeline, setup, installer
 │   │   ├── SelfTest26.swift           # 2.6: license gate, release rules
@@ -256,7 +257,7 @@ updates): see [RELEASING.md](RELEASING.md). A source build has no license gate.
 
 ```
 swift build -c release
-.build/release/spiel-cli selftest     # 573/573 expected
+.build/release/spiel-cli selftest     # 587/587 expected
 ./scripts/bundle.sh release           # → build/Spiel.app (+ Contents/Helpers/spiel)
 ```
 

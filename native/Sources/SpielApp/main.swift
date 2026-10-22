@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What the last dictation did, in one line. Lives in the menu because the menu
     /// is the only surface the user actually opens when "nothing happened".
     private var lastOutcome: String?
+    /// Level-bar state for the open microphone; fresh on every open.
+    private var levelMeter = LevelMeter()
     /// Running transcript for the panel preview; reset on every start.
     private var previewText = ""
     private var accessibilityPoll: Timer?
@@ -484,6 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the capture handler is identical, only what happens after differs.
     @discardableResult
     private func openMicrophone(into session: DictationSession, mode: Mode) -> Bool {
+        levelMeter = LevelMeter()
         do {
             try capture.start(handler: { [weak self] samples in
                 guard let self else { return }
@@ -494,12 +497,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 var sum: Float = 0
                 for s in samples { sum += s * s }
                 let rms = (samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot())
-                // dB mapping tuned to a laptop mic at conversational distance:
-                // -48 dBFS -> empty, -18 dBFS -> full. The first mapping (-50..-10)
-                // put normal speech at ~40% and Christopher asked for more motion.
-                let db = 20 * log10(max(rms, 1e-6))
-                let level = min(max((db + 48) / 30, 0), 1)
+                let db = LevelMeter.dBFS(rms: rms)
                 Task { @MainActor in
+                    // The bars' window follows the input (LevelMeter), so a quiet mic
+                    // or a distant speaker still moves them.
+                    let level = self.levelMeter.level(dB: db)
                     if mode == .listen { self.listenPanel.update(level: level) } else { self.panel.update(level: level) }
                 }
             }, onRouteChange: { [weak self] outcome in

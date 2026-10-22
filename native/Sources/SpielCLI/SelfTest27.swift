@@ -12,6 +12,8 @@ extension SelfTest {
         screenshotShortcutTests()
         screenshotDiagnosticsTests()
         appSourceRules27()
+        levelMeterTests()
+        levelMeterSourceRules()
     }
 
     // MARK: Marker rendering
@@ -258,5 +260,129 @@ extension SelfTest {
                ? "names a path" : "ok", "ok", "screenshot log lines carry no file or folder name")
         expect(body.contains("screenshotFailed(") && body.contains("Notifier.post") ? "ok" : "missing", "ok",
                "a failed capture is reported, never dropped")
+    }
+
+    // MARK: 2.7.4 — level bars that move on a quiet mic
+
+    /// Per-buffer dB for a synthetic take: ~47 buffers a second, deterministic jitter.
+    /// `speech` alternates 10 buffers at the speech level with 4 dipped 15 dB (gaps
+    /// between syllables); phrases are separated by `pause` buffers of room noise.
+    static func meterTake(noise: Float, speech: Float, phrases: Int, pause: Int = 30,
+                          leadIn: Int = 47, seed: UInt32 = 7) -> [(dB: Float, isSpeech: Bool)] {
+        var state = seed
+        func jitter(_ amp: Float) -> Float {
+            state = state &* 1_664_525 &+ 1_013_904_223
+            return (Float(state >> 8) / Float(1 << 24) * 2 - 1) * amp
+        }
+        var out: [(Float, Bool)] = []
+        for _ in 0..<leadIn { out.append((noise + jitter(1.5), false)) }
+        for _ in 0..<phrases {
+            for _ in 0..<6 {
+                for _ in 0..<10 { out.append((speech + jitter(3), true)) }
+                for _ in 0..<4 { out.append((max(speech - 15, noise) + jitter(1.5), false)) }
+            }
+            for _ in 0..<pause { out.append((noise + jitter(1.5), false)) }
+        }
+        return out
+    }
+
+    static func median(_ v: [Float]) -> Float {
+        guard !v.isEmpty else { return .nan }
+        return v.sorted()[v.count / 2]
+    }
+
+    static func levelMeterTests() {
+        print("\n2.7.4 — level bars follow the input")
+        func run(_ take: [(dB: Float, isSpeech: Bool)]) -> [(old: Float, new: Float, isSpeech: Bool)] {
+            var m = LevelMeter()
+            return take.map { (LevelMeter.fixedLevel(dB: $0.dB), m.level(dB: $0.dB), $0.isSpeech) }
+        }
+        func f(_ x: Float) -> String { String(format: "%.2f", x) }
+
+        // A quiet mic: speech around -45 dBFS over a -72 dBFS room. The fixed window
+        // (-48…-18) leaves it at the bottom: the "very small or non existent" bars.
+        let quiet = run(meterTake(noise: -72, speech: -45, phrases: 4))
+        let quietSpeech = quiet.dropFirst(47).filter(\.isSpeech)
+        let quietRoom = quiet.prefix(47).dropFirst(10) + quiet.suffix(25)
+        expect(median(quietSpeech.map(\.old)) < 0.2 ? "ok" : f(median(quietSpeech.map(\.old))), "ok",
+               "the fixed window keeps speech at -45 dBFS near empty (median under 0.2): the reported bug")
+        expect(median(quietSpeech.map(\.new)) >= 0.5 ? "ok" : f(median(quietSpeech.map(\.new))), "ok",
+               "the following window lifts the same speech to at least half height (median)")
+        expect((quietRoom.map(\.new).max() ?? 1) <= 0.1 ? "ok" : f(quietRoom.map(\.new).max() ?? 1), "ok",
+               "the quiet room around it stays near empty (every buffer at most 0.1)")
+
+        // A mic that already moved the bars: never lower than before.
+        let loud = run(meterTake(noise: -60, speech: -28, phrases: 4))
+        expect(loud.allSatisfy { $0.new >= $0.old } ? "ok" : "lower", "ok",
+               "a loud mic reads at least as high as the fixed window, on every buffer")
+
+        // Room noise only, a noisy room: stays near empty once the window has seen it.
+        let room = run(meterTake(noise: -55, speech: -55, phrases: 0, leadIn: 235))
+        let roomLater = room.dropFirst(47).map(\.new).sorted()
+        expect(roomLater[Int(Float(roomLater.count - 1) * 0.95)] <= 0.1 ? "ok" : f(roomLater.last ?? 1), "ok",
+               "5 s of room noise at -55 dBFS: 95 % of buffers at most 0.1 after the first second")
+
+        // A room with an occasional small sound (a click, a chair) 5 dB over it: the
+        // window's minimum span keeps that from reading as speech.
+        var ticks = LevelMeter()
+        let tickLevels = meterTake(noise: -55, speech: -55, phrases: 0, leadIn: 235, seed: 11).enumerated()
+            .map { i, b in (i % 20 == 19, ticks.level(dB: i % 20 == 19 ? -50 : b.dB)) }
+            .dropFirst(47).filter(\.0).map(\.1)
+        expect((tickLevels.max() ?? 1) <= 0.25 ? "ok" : f(tickLevels.max() ?? 1), "ok",
+               "a sound 5 dB over the room moves the bars at most a quarter of the way")
+
+        // A muted stretch, then noise: digital silence stays out of the window, so
+        // the room after it does not fill the bars.
+        var m = LevelMeter()
+        let muted = (0..<94).map { _ in m.level(dB: LevelMeter.dBFS(rms: 0)) }
+        expect(muted.allSatisfy { $0 == 0 } ? "ok" : "moved", "ok", "2 s of digital silence (a muted input) reads empty")
+        let after = meterTake(noise: -60, speech: -60, phrases: 0, leadIn: 94, seed: 3).map { m.level(dB: $0.dB) }
+        let afterSorted = after.dropFirst(23).sorted()
+        expect(afterSorted[Int(Float(afterSorted.count - 1) * 0.95)] <= 0.15 ? "ok" : f(afterSorted.last ?? 1), "ok",
+               "room noise after the muted stretch stays near empty (95 % at most 0.15 after 0.5 s)")
+
+        // Talking from the first buffer, quiet mic: the bars move within half a second.
+        let cold = run(meterTake(noise: -70, speech: -46, phrases: 2, leadIn: 0))
+        expect((cold.prefix(23).filter(\.isSpeech).map(\.new).max() ?? 0) >= 0.5 ? "ok" : "flat", "ok",
+               "speech from the very first buffer reaches half height within 0.5 s")
+
+        // A distant speaker in a noisy room (Listen): speech stands clearly above the room.
+        let far = run(meterTake(noise: -55, speech: -45, phrases: 4))
+        let farSpeech = far.dropFirst(47).filter(\.isSpeech).map(\.new)
+        let farRoom = far.dropFirst(47).filter { !$0.isSpeech }.map(\.new)
+        expect(median(farSpeech) - median(farRoom) >= 0.3 ? "ok" : f(median(farSpeech) - median(farRoom)), "ok",
+               "speech 10 dB over a -55 dBFS room: median bar at least 0.3 above the room's")
+
+        var nanMeter = LevelMeter()
+        expect([nanMeter.level(dB: .nan), nanMeter.level(dB: -.infinity), nanMeter.level(dB: 12)].map(f).joined(separator: " "),
+               "0.00 0.00 1.00", "NaN and -inf read empty; above full scale is clamped to 1")
+    }
+
+    static func levelMeterSourceRules() {
+        print("\n2.7.4 — app-source rules (level bars)")
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var root: URL?
+        for _ in 0..<8 {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Sources/SpielApp/main.swift").path) {
+                root = dir; break
+            }
+            dir.deleteLastPathComponent()
+        }
+        guard let root,
+              let main = try? String(contentsOf: root.appendingPathComponent("Sources/SpielApp/main.swift"), encoding: .utf8) else {
+            print("  – SKIPPED: Sources/SpielApp not found beside this binary (nothing asserted)")
+            return
+        }
+        guard let start = main.range(of: "private func openMicrophone("),
+              let end = main.range(of: "private func beginCapture(", range: start.upperBound..<main.endIndex) else {
+            expect("missing", "found", "openMicrophone exists")
+            return
+        }
+        let body = String(main[start.lowerBound..<end.lowerBound])
+        expect(body.contains("levelMeter = LevelMeter()") ? "ok" : "missing", "ok",
+               "every microphone open starts the bars' window fresh")
+        expect(body.contains("self.levelMeter.level(dB:") ? "ok" : "missing", "ok",
+               "both panels get their bar height from LevelMeter")
+        expect(body.contains("/ 30") ? "inline mapping" : "ok", "ok", "no inline fixed dB mapping left in the capture handler")
     }
 }

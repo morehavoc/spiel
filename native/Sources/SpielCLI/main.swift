@@ -28,6 +28,10 @@ func usage() -> Never {
           ships now) — and print every rewrite each one made or refused.
           --vocab builtin = the compiled-in list only (what a Mac with no
           vocabulary.txt, or only the Edit Vocabulary… template, dictates with).
+      spiel-cli meter-eval <audiofile> [--gain dB] [--csv]
+          read a recording in mic-sized buffers and print how the level bars would
+          move: the fixed window used before 2.7.4 beside LevelMeter. --gain -20
+          stands in for a quieter mic or a speaker farther away.
 
     """.data(using: .utf8)!)
     exit(2)
@@ -422,6 +426,53 @@ case "boost-eval":
     }
     semaphore.wait()
     exit(exitCode)
+
+case "meter-eval":
+    guard args.count >= 2 else { usage() }
+    let gainDB = Float(arg("--gain", in: args) ?? "0") ?? 0
+    do {
+        let samples = try AudioCapture.loadFile(at: URL(fileURLWithPath: args[1]))
+        let scale = powf(10, gainDB / 20)
+        // 1024 frames at 48 kHz become ~341 at 16 kHz: the size the app's tap delivers.
+        let size = 341
+        var meter = LevelMeter()
+        var dbs: [Float] = [], fixed: [Float] = [], followed: [Float] = []
+        var i = 0
+        while i + size <= samples.count {
+            var sum: Float = 0
+            for s in samples[i..<(i + size)] { let v = s * scale; sum += v * v }
+            let db = LevelMeter.dBFS(rms: (sum / Float(size)).squareRoot())
+            dbs.append(db)
+            fixed.append(LevelMeter.fixedLevel(dB: db))
+            followed.append(meter.level(dB: db))
+            i += size
+        }
+        guard !dbs.isEmpty else { print("no audio"); exit(1) }
+        if args.contains("--csv") {
+            print("buffer,seconds,dbfs,fixed,levelmeter")
+            for k in dbs.indices {
+                print("\(k),\(String(format: "%.3f", Double(k * size) / 16_000)),\(String(format: "%.1f", dbs[k])),\(String(format: "%.3f", fixed[k])),\(String(format: "%.3f", followed[k]))")
+            }
+            exit(0)
+        }
+        func pct(_ v: [Float], _ p: Float) -> Float { let s = v.sorted(); return s[Int(Float(s.count - 1) * p)] }
+        func share(_ v: [Float], _ test: (Float) -> Bool) -> String {
+            String(format: "%.0f%%", Float(v.filter(test).count) * 100 / Float(v.count))
+        }
+        let blocks = Array(" ▁▂▃▄▅▆▇█")
+        func spark(_ v: [Float]) -> String {
+            String(v.prefix(4 * 47).map { blocks[min(Int($0 * 8 + 0.5), 8)] })
+        }
+        print("\(args[1]) at \(gainDB >= 0 ? "+" : "")\(gainDB) dB: \(dbs.count) buffers, \(String(format: "%.1f", Double(samples.count) / 16_000)) s")
+        print(String(format: "input dBFS: quiet end (p10) %.1f, median %.1f, loud end (p90) %.1f", pct(dbs, 0.1), pct(dbs, 0.5), pct(dbs, 0.9)))
+        for (label, v) in [("fixed window (2.7.3)", fixed), ("LevelMeter (2.7.4) ", followed)] {
+            print("\(label): median \(String(format: "%.2f", pct(v, 0.5))), at a dot (≤0.1) \(share(v) { $0 <= 0.1 }), half height or more \(share(v) { $0 >= 0.5 })")
+            print("  first 4 s |\(spark(v))|")
+        }
+    } catch {
+        FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
 
 default:
     usage()
