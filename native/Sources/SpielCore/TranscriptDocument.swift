@@ -155,9 +155,15 @@ public struct TranscriptDocument: Sendable, Equatable {
         public var version: String
         public var inputDevice: String
         public var engine: String
-        public init(title: String, startedAt: Date, endedAt: Date, version: String, inputDevice: String, engine: String) {
+        /// Where the meeting was (the iPhone's optional location). Omitted when nil.
+        public var location: String?
+        /// File name of the recording kept beside the transcript. Omitted when nil.
+        public var audio: String?
+        public init(title: String, startedAt: Date, endedAt: Date, version: String, inputDevice: String, engine: String,
+                    location: String? = nil, audio: String? = nil) {
             self.title = title; self.startedAt = startedAt; self.endedAt = endedAt
             self.version = version; self.inputDevice = inputDevice; self.engine = engine
+            self.location = location; self.audio = audio
         }
     }
 
@@ -178,6 +184,8 @@ public struct TranscriptDocument: Sendable, Equatable {
         out += "source: microphone\n"
         out += "input_device: \(Self.yaml(f.inputDevice))\n"
         out += "engine: \(Self.yaml(f.engine))\n"
+        if let l = f.location, !l.isEmpty { out += "location: \(Self.yaml(l))\n" }
+        if let a = f.audio, !a.isEmpty { out += "audio: \(Self.yaml(a))\n" }
         out += "---\n\n"
         out += body(screenshots: screenshots)
         out += "\n"

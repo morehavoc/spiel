@@ -77,7 +77,7 @@ public struct Glossary: Sendable {
     // built-ins, and a user alias wins if both define it.
 
     public static let userFileURL: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
+        let dir = SpielPaths.home
             .appendingPathComponent("Library/Application Support/Spiel", isDirectory: true)
         return dir.appendingPathComponent("vocabulary.txt")
     }()

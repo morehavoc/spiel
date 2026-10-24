@@ -1,0 +1,65 @@
+# XcodeGen spec for Spiel for iPhone (Listen: live meeting transcripts).
+#   cd native/ios && xcodegen && open SpielMobile.xcodeproj
+# It compiles a SUBSET of ../Sources/SpielCore directly (the Mac-only files —
+# hotkeys, paste, CoreAudio devices, AppKit spellcheck — are left out) plus the
+# iOS files in SpielMobile/. FluidAudio is pinned to the same exact version as
+# Package.swift. On jaws-mini, SwiftPM's artifact download hangs; see
+# RELEASING.md for the localhost mirror (.swiftpm/configuration/mirrors.json
+# does not apply to an .xcodeproj — use scripts/build-ios.sh).
+name: SpielMobile
+options:
+  bundleIdPrefix: com.morehavoc
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    exactVersion: 0.15.6
+targets:
+  SpielMobile:
+    type: application
+    platform: iOS
+    sources:
+      - path: SpielMobile
+      - path: ../Sources/SpielCore/Transcriber.swift
+      - path: ../Sources/SpielCore/TranscriptAssembler.swift
+      - path: ../Sources/SpielCore/VoiceActivityDetector.swift
+      - path: ../Sources/SpielCore/AudioSink.swift
+      - path: ../Sources/SpielCore/DictationSession.swift
+      - path: ../Sources/SpielCore/ParakeetTranscriber.swift
+      - path: ../Sources/SpielCore/ModelLoadProgress.swift
+      - path: ../Sources/SpielCore/TranscriptDocument.swift
+      - path: ../Sources/SpielCore/TranscriptStore.swift
+      - path: ../Sources/SpielCore/Glossary.swift
+      - path: ../Sources/SpielCore/DiagnosticLog.swift
+      - path: ../Sources/SpielCore/SpielPaths.swift
+      - path: ../Sources/SpielCore/Version.swift
+    dependencies:
+      - package: FluidAudio
+        product: FluidAudio
+    info:
+      path: SpielMobile/Info.plist
+      properties:
+        CFBundleDisplayName: Spiel
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "2"
+        UILaunchScreen: {}
+        NSCalendarsFullAccessUsageDescription: Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.
+        NSLocationWhenInUseUsageDescription: When you turn on Add location, Spiel notes where the meeting happened in the transcript.
+        NSMicrophoneUsageDescription: Spiel listens to the meeting you are in and writes it down. Audio never leaves this iPhone.
+        UIBackgroundModes: [audio]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.morehavoc.spiel.mobile
+        PRODUCT_NAME: Spiel
+        DEVELOPMENT_TEAM: WTCTU8TMQ4
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
