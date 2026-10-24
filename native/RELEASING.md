@@ -65,3 +65,11 @@ SwiftPM's binary-artifact download hangs on this Mac (curl works). If a fresh ch
 stalls at `Downloading binary artifact`, fetch the zip with curl and serve it to a
 SwiftPM mirror on localhost, or copy `.build/artifacts` from a checkout that has it.
 Delete `.swiftpm/configuration/mirrors.json` afterwards.
+
+## iPhone (Spiel Listen) → TestFlight
+
+`.github/workflows/testflight.yml` runs on a tag `ios-v*` (e.g. `ios-v0.2.0-2`) or by hand from the
+Actions tab. It archives unsigned, then Xcode's cloud signing signs for App Store distribution and
+uploads. Secrets: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY` (base64 of the .p8) — an **Admin** team key
+("Spiel GitHub"), separate from the Developer-role notarization key. Build number = 100 + run number;
+the marketing version is `CFBundleShortVersionString` in `native/ios/project.yml`.
