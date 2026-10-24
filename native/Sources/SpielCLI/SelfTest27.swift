@@ -14,6 +14,30 @@ extension SelfTest {
         appSourceRules27()
         levelMeterTests()
         levelMeterSourceRules()
+        releaseWorkflowRules()
+    }
+
+    /// A deleted or mistyped Gumroad secret must stop the release, not ship a build
+    /// with no license check that Sparkle pushes to every install.
+    static func releaseWorkflowRules() {
+        print("\n2.7.4 — release workflow fails closed on the license gate")
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        var yml: String?
+        for _ in 0..<9 {
+            if let s = try? String(contentsOf: dir.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8) {
+                yml = s; break
+            }
+            dir.deleteLastPathComponent()
+        }
+        guard let yml else {
+            print("  – SKIPPED: .github/workflows/release.yml not found above this binary (nothing asserted)")
+            return
+        }
+        let noLicense = yml.split(separator: "\n").filter { $0.contains("SPIEL_NO_LICENSE=1") }
+        expect(noLicense.count == 1 && noLicense[0].contains(#"[ "${SPIEL_UNLICENSED:-}" = "true" ]"#) ? "ok" : noLicense.joined(separator: " | "), "ok",
+               "the only way to an ungated build is the repository variable SPIEL_UNLICENSED=true")
+        expect(yml.contains("::error::GUMROAD_PRODUCT_ID or SPIEL_PURCHASE_URL is empty. Nothing was built.") && yml.contains("exit 1") ? "ok" : "missing", "ok",
+               "an empty Gumroad secret fails the release before anything is built")
     }
 
     // MARK: Marker rendering

@@ -25,6 +25,10 @@ steps 1–2: the Developer ID `.p12` and the `AuthKey_<id>.p8`).
   "Generate a unique license key per sale")
 - `SPIEL_PURCHASE_URL`: the product page
 
+If either Gumroad secret is empty the release fails and nothing is built. A build
+without the license gate takes the repository variable `SPIEL_UNLICENSED=true`
+(Settings → Secrets and variables → Actions → Variables).
+
 Activation allows 2 Macs per key (Gumroad's `uses` count). To free a seat, decrement
 uses or disable the key in Gumroad; a disabled, refunded or charged-back key stops
 working after two weekly checks.
