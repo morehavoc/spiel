@@ -1,0 +1,112 @@
+# Spiel Listen (iPhone) → TestFlight.
+# Runs on a tag ios-v* (e.g. ios-v0.2.0-1) or by hand from the Actions tab.
+# Archives unsigned, then lets Xcode's cloud signing sign for App Store distribution
+# with the App Store Connect key (Admin role) and upload the build.
+# Secrets: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY (base64 of the .p8).
+name: TestFlight
+
+on:
+  push:
+    tags: ['ios-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      TEAM_ID: WTCTU8TMQ4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Secrets present
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+        run: |
+          set -uo pipefail
+          missing=""
+          for n in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY; do [ -z "${!n:-}" ] && missing="$missing $n"; done
+          if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing. Nothing was built."; exit 1; fi
+
+      - name: Write the API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          # Accept the .p8 either base64-encoded (documented) or pasted as-is.
+          if printf '%s' "$ASC_KEY" | grep -q 'BEGIN PRIVATE KEY'; then
+            printf '%s\n' "$ASC_KEY" > "$key"
+          else
+            printf '%s' "$ASC_KEY" | base64 --decode > "$key"
+          fi
+          grep -q 'BEGIN PRIVATE KEY' "$key" || { echo "::error::ASC_KEY did not decode to a .p8 private key."; exit 1; }
+          chmod 600 "$key"
+          echo "ASC_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: Generate the Xcode project
+        working-directory: native/ios
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen
+          # Every upload needs a new build number; the run number only goes up.
+          build=$((100 + GITHUB_RUN_NUMBER))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" SpielMobile/Info.plist
+          echo "Version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' SpielMobile/Info.plist) ($build)"
+
+      - name: Archive
+        working-directory: native/ios
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project SpielMobile.xcodeproj -scheme SpielMobile \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/SpielListen.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tail -n 40
+
+      - name: Sign and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          sed -i '' 's/^ *//' "$RUNNER_TEMP/ExportOptions.plist"
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/SpielListen.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8

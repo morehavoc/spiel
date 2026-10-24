@@ -41,7 +41,8 @@ targets:
     info:
       path: SpielMobile/Info.plist
       properties:
-        CFBundleDisplayName: Spiel
+        CFBundleDisplayName: Spiel Listen
+        ITSAppUsesNonExemptEncryption: false
         CFBundleShortVersionString: "0.2.0"
         CFBundleVersion: "2"
         UILaunchScreen: {}
