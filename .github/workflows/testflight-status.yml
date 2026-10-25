@@ -1,0 +1,54 @@
+# Read-only: what App Store Connect says about Spiel Listen's TestFlight builds, groups and testers.
+# Runs on a tag ios-status-* or by hand. Changes nothing.
+name: TestFlight status
+
+on:
+  push:
+    tags: ['ios-status-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+          BUNDLE_ID: com.morehavoc.spiel.mobile
+        run: |
+          set -euo pipefail
+          pip install -q pyjwt cryptography requests
+          python3 - <<'PY'
+          import os, time, base64, jwt, requests
+          k = os.environ['ASC_KEY']
+          if 'BEGIN PRIVATE KEY' not in k: k = base64.b64decode(k).decode()
+          tok = jwt.encode({'iss': os.environ['ASC_ISSUER_ID'], 'iat': int(time.time()), 'exp': int(time.time()) + 900, 'aud': 'appstoreconnect-v1'},
+                           k, algorithm='ES256', headers={'kid': os.environ['ASC_KEY_ID'], 'typ': 'JWT'})
+          H = {'Authorization': f'Bearer {tok}'}
+          B = 'https://api.appstoreconnect.apple.com/v1'
+          def get(p, **q):
+              r = requests.get(B + p, headers=H, params=q); r.raise_for_status(); return r.json()
+          apps = get('/apps', **{'filter[bundleId]': os.environ['BUNDLE_ID']})['data']
+          if not apps: print('NO APP RECORD for', os.environ['BUNDLE_ID']); raise SystemExit(1)
+          app = apps[0]; aid = app['id']; print('APP', aid, app['attributes']['name'])
+          for b in get('/builds', **{'filter[app]': aid, 'limit': 10, 'include': 'buildBetaDetail', 'sort': '-uploadedDate'}).get('data', []):
+              a = b['attributes']
+              print('BUILD', a['version'], 'state=' + str(a.get('processingState')), 'expired=' + str(a.get('expired')),
+                    'encryption=' + str(a.get('usesNonExemptEncryption')), 'uploaded=' + str(a.get('uploadedDate')))
+              d = get(f"/builds/{b['id']}/buildBetaDetail")['data']['attributes']
+              print('  beta: internal=' + str(d.get('internalBuildState')), 'external=' + str(d.get('externalBuildState')))
+              for g in get(f"/builds/{b['id']}/betaGroups").get('data', []):
+                  print('  in group:', g['attributes']['name'])
+          for g in get(f'/apps/{aid}/betaGroups').get('data', []):
+              ga = g['attributes']
+              print('GROUP', ga['name'], 'internal=' + str(ga.get('isInternalGroup')), 'allBuilds=' + str(ga.get('hasAccessToAllBuilds')))
+              for t in get(f"/betaGroups/{g['id']}/betaTesters").get('data', []):
+                  ta = t['attributes']
+                  print('  tester', ta.get('email'), 'state=' + str(ta.get('state')), 'invite=' + str(ta.get('inviteType')))
+          PY
