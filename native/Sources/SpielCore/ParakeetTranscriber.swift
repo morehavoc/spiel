@@ -25,6 +25,11 @@ public actor ParakeetTranscriber: Transcriber {
         self.progress = progress
     }
 
+    /// True when the model files are already on disk, so `prepare()` will not download.
+    public static func isDownloaded(version: AsrModelVersion = .v3) -> Bool {
+        AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: version), version: version)
+    }
+
     public func prepare() async throws {
         if manager != nil { return }
         do {

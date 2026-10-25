@@ -223,6 +223,8 @@ struct LiveView: View {
     @State private var jumpTo: Int?
     @State private var toast: String?
     @State private var showNew = false
+    @State private var askDownload = false
+    @State private var askedDownload = false
     @State private var renaming = false
     @State private var newTitle = ""
     @AppStorage(TextSize.key) private var size = TextSize.standard
@@ -271,6 +273,13 @@ struct LiveView: View {
             }
         }
         .sheet(isPresented: $showNew) { NewMeetingSheet().environmentObject(model) }
+        .alert("Download the speech model?", isPresented: $askDownload) {
+            Button("Download Now") { model.downloadModel() }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 600 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
+        }
+        .onAppear { if model.phase == .needsDownload && !askedDownload { askedDownload = true; askDownload = true } }
         .alert("Rename", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
             Button("Save") { if !newTitle.trimmingCharacters(in: .whitespaces).isEmpty { model.title = newTitle } }
@@ -302,8 +311,16 @@ struct LiveView: View {
                     .foregroundStyle(Theme.dim).padding(.horizontal, 40)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .needsDownload:
+            HomeHero(onNew: { askDownload = true }, buttonTitle: "Download speech model", buttonIcon: "arrow.down.circle.fill",
+                     note: "Spiel needs a one-time download of about 600 MB before it can listen. Wi-Fi recommended.")
         case .failed(let text):
-            Text(text).foregroundStyle(Theme.record).padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 18) {
+                Text(text).foregroundStyle(Theme.record).multilineTextAlignment(.center)
+                Button { model.downloadModel() } label: { Label("Try again", systemImage: "arrow.clockwise") }
+                    .buttonStyle(GradientButtonStyle()).padding(.horizontal, 30)
+            }
+            .padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
             if model.startedAt == nil {
                 HomeHero(onNew: { showNew = true })
@@ -411,6 +428,9 @@ struct RecordButton: View {
 
 struct HomeHero: View {
     let onNew: () -> Void
+    var buttonTitle = "New meeting"
+    var buttonIcon = "mic.fill"
+    var note: String?
     @State private var recent: [SavedTranscript] = []
 
     var body: some View {
@@ -427,9 +447,13 @@ struct HomeHero: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(.top, 30)
-                Button(action: onNew) { Label("New meeting", systemImage: "mic.fill") }
+                Button(action: onNew) { Label(buttonTitle, systemImage: buttonIcon) }
                     .buttonStyle(GradientButtonStyle())
                     .padding(.horizontal, 30)
+                if let note {
+                    Text(note).font(.footnote).foregroundStyle(Theme.dim)
+                        .multilineTextAlignment(.center).padding(.horizontal, 40)
+                }
                 if !recent.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("RECENT").font(.caption.weight(.semibold)).foregroundStyle(Theme.dim).tracking(1.2)

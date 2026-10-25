@@ -9,6 +9,8 @@ import UIKit
 @MainActor
 final class ListenModel: ObservableObject {
     enum Phase: Equatable {
+        /// The speech model is not on this iPhone yet; waiting for the user to start the download.
+        case needsDownload
         case loading(String)
         case ready
         case recording
@@ -46,6 +48,20 @@ final class ListenModel: ObservableObject {
 
     init() {
         observeAudioSession()
+        if ParakeetTranscriber.isDownloaded(version: .v3) {
+            Task { await loadEngine() }
+        } else {
+            phase = .needsDownload
+        }
+    }
+
+    /// Starts (or retries) loading the speech model, downloading it if needed.
+    func downloadModel() {
+        switch phase {
+        case .needsDownload, .failed: break
+        default: return
+        }
+        phase = .loading("Starting…")
         Task { await loadEngine() }
     }
 
