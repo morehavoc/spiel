@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import FluidAudio
 import SwiftUI
 import UIKit
 
@@ -104,6 +105,7 @@ final class ListenModel: ObservableObject {
         }
         session = s
         loadStep = nil
+        Self.excludeModelsFromBackup()
         phase = .ready
         #if DEBUG
         if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
@@ -113,6 +115,16 @@ final class ListenModel: ObservableObject {
             }
         }
         #endif
+    }
+
+    /// The speech model is re-downloadable, so it stays out of iCloud/device backups
+    /// (Apple's data-storage rule; it would also add ~600 MB to every backup).
+    /// Transcripts and kept audio live in Documents and ARE backed up.
+    private static func excludeModelsFromBackup() {
+        var dir = AsrModels.defaultCacheDirectory(for: .v3).deletingLastPathComponent()
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        do { try dir.setResourceValues(values) } catch { DiagnosticLog.write("could not exclude models from backup: \(error)") }
     }
 
     private func noteLoading(_ text: String, step: Int = 0, fraction: Double? = nil) {
