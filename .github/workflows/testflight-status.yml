@@ -43,11 +43,11 @@ jobs:
                     'encryption=' + str(a.get('usesNonExemptEncryption')), 'uploaded=' + str(a.get('uploadedDate')))
               d = get(f"/builds/{b['id']}/buildBetaDetail")['data']['attributes']
               print('  beta: internal=' + str(d.get('internalBuildState')), 'external=' + str(d.get('externalBuildState')))
-              for g in get(f"/builds/{b['id']}/betaGroups").get('data', []):
-                  print('  in group:', g['attributes']['name'])
           for g in get(f'/apps/{aid}/betaGroups').get('data', []):
               ga = g['attributes']
               print('GROUP', ga['name'], 'internal=' + str(ga.get('isInternalGroup')), 'allBuilds=' + str(ga.get('hasAccessToAllBuilds')))
+              for bb in get(f"/betaGroups/{g['id']}/builds").get('data', []):
+                  print('  has build', bb['attributes']['version'])
               for t in get(f"/betaGroups/{g['id']}/betaTesters").get('data', []):
                   ta = t['attributes']
                   print('  tester', ta.get('email'), 'state=' + str(ta.get('state')), 'invite=' + str(ta.get('inviteType')))
