@@ -307,8 +307,12 @@ struct LiveView: View {
         case .loading(let text):
             VStack(spacing: 22) {
                 WaveBars(level: 0.6, live: true, barWidth: 8, height: 70)
-                Text(text).font(.system(.callout, design: .rounded)).multilineTextAlignment(.center)
-                    .foregroundStyle(Theme.dim).padding(.horizontal, 40)
+                if let step = model.loadStep {
+                    LoadProgress(step: step, text: text).padding(.horizontal, 36)
+                } else {
+                    Text(text).font(.system(.callout, design: .rounded)).multilineTextAlignment(.center)
+                        .foregroundStyle(Theme.dim).padding(.horizontal, 40)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .needsDownload:
@@ -423,6 +427,69 @@ struct RecordButton: View {
         }
         .accessibilityLabel("Stop")
         .onAppear { withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true } }
+    }
+}
+
+/// The model load as two steps. Step 1 (download) has a real fraction; step 2 (CoreML
+/// compiling for the Neural Engine) reports none, so its bar moves without claiming a
+/// percentage and the elapsed time shows it is still working.
+struct LoadProgress: View {
+    let step: ListenModel.LoadStep
+    let text: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Step \(step.step) of 2").font(.caption.weight(.semibold)).tracking(1.2)
+                .foregroundStyle(Theme.dim)
+            if let f = step.fraction {
+                ProgressBar(fraction: f)
+                Text("\(Int(f * 100))%").font(.system(.title3, design: .rounded).monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Theme.ink)
+            } else {
+                IndeterminateBar()
+                TimelineView(.periodic(from: step.since, by: 1)) { ctx in
+                    let secs = max(0, Int(ctx.date.timeIntervalSince(step.since)))
+                    Text(String(format: "%d:%02d", secs / 60, secs % 60))
+                        .font(.system(.title3, design: .rounded).monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Theme.ink)
+                }
+            }
+            Text(text).font(.system(.callout, design: .rounded)).multilineTextAlignment(.center)
+                .foregroundStyle(Theme.dim)
+        }
+    }
+}
+
+struct ProgressBar: View {
+    let fraction: Double
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.card).overlay(Capsule().stroke(Theme.cardStroke))
+                Capsule().fill(Theme.wave).frame(width: max(8, g.size.width * min(max(fraction, 0), 1)))
+                    .animation(.easeOut(duration: 0.3), value: fraction)
+            }
+        }
+        .frame(height: 10)
+        .accessibilityElement().accessibilityLabel("Download").accessibilityValue("\(Int(fraction * 100)) percent")
+    }
+}
+
+/// A segment sliding along the track: working, with no percentage to claim.
+struct IndeterminateBar: View {
+    @State private var x: CGFloat = -0.35
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.card).overlay(Capsule().stroke(Theme.cardStroke))
+                Capsule().fill(Theme.wave).frame(width: g.size.width * 0.35)
+                    .offset(x: g.size.width * x)
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 10)
+        .onAppear { withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) { x = 1.0 } }
+        .accessibilityElement().accessibilityLabel("Preparing")
     }
 }
 

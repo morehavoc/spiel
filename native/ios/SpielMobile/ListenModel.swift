@@ -31,6 +31,10 @@ final class ListenModel: ObservableObject {
     @Published private(set) var location: String?
     /// The kept recording, when this meeting keeps audio.
     @Published private(set) var audioURL: URL?
+    /// Where the model load is, for the progress bar: step 1 = download (has a fraction),
+    /// step 2 = preparing for the Neural Engine (no fraction exists for it; shown indeterminate).
+    struct LoadStep: Equatable { var step: Int; var fraction: Double?; var since: Date }
+    @Published private(set) var loadStep: LoadStep?
 
     private var session: DictationSession?
     private let capture = AudioCapture()
@@ -52,6 +56,9 @@ final class ListenModel: ObservableObject {
             Task { await loadEngine() }
         } else {
             phase = .needsDownload
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["SPIEL_AUTODOWNLOAD"] == "1" { downloadModel() }
+            #endif
         }
     }
 
@@ -70,18 +77,22 @@ final class ListenModel: ObservableObject {
     private func loadEngine() async {
         let transcriber = ParakeetTranscriber(version: .v3) { p in
             let text: String
+            var step = 0
             switch p.phase {
             case .listing: text = "Finding the speech model…"
             case .downloading:
-                text = "Downloading the speech model (about 600 MB, once)… \(Int((p.downloadFraction ?? 0) * 100))%"
-            case .compiling: text = "Preparing the speech model for the Neural Engine…"
+                text = "Downloading the speech model (about 600 MB, once)"; step = 1
+            case .compiling:
+                text = "Preparing the speech model for the Neural Engine. This happens once and can take a few minutes."; step = 2
             }
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.noteLoading(text) } }
+            let fraction = p.downloadFraction
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.noteLoading(text, step: step, fraction: fraction) } }
         }
         let s = DictationSession(transcriber: transcriber)
         do {
             try await s.prepare()
         } catch {
+            loadStep = nil
             phase = .failed("The speech model did not load: \(error)")
             DiagnosticLog.write("engine load failed: \(error)")
             return
@@ -92,6 +103,7 @@ final class ListenModel: ObservableObject {
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.handle(event) } }
         }
         session = s
+        loadStep = nil
         phase = .ready
         #if DEBUG
         if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
@@ -103,8 +115,15 @@ final class ListenModel: ObservableObject {
         #endif
     }
 
-    private func noteLoading(_ text: String) {
-        if case .loading = phase { phase = .loading(text) }
+    private func noteLoading(_ text: String, step: Int = 0, fraction: Double? = nil) {
+        guard case .loading = phase else { return }
+        phase = .loading(text)
+        if step == 0 { return }
+        if loadStep?.step == step {
+            loadStep?.fraction = fraction
+        } else {
+            loadStep = LoadStep(step: step, fraction: fraction, since: Date())
+        }
     }
 
     // MARK: - Controls
