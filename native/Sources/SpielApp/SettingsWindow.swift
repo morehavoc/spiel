@@ -222,7 +222,7 @@ private struct GeneralSettings: View {
                         Text("\(model.listenStopShortcut) (not found)").tag(model.listenStopShortcut)
                     }
                 }
-                Text("Runs automatically with the saved transcript file as its input, every time Listen stops.")
+                Text("Runs automatically with the saved transcript file as its input, every time Listen stops. In Shortcuts, turn on Details → Use as Quick Action so the Shortcut can receive it.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("History") {
