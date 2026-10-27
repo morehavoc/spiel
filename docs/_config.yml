@@ -1,0 +1,12 @@
+title: Spiel
+description: Dictation and meeting transcripts that run entirely on your Mac and iPhone.
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+search_enabled: true
+color_scheme: light
+aux_links:
+  "Buy Spiel": "https://morehavoc.gumroad.com/l/spiel"
+  "GitHub": "https://github.com/morehavoc/spiel"
+aux_links_new_tab: true
+footer_content: "Spiel is open source. Audio and transcripts never leave your device."

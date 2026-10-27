@@ -1,3 +1,8 @@
+---
+title: Shortcuts
+nav_order: 4
+---
+
 # Run a Shortcut when Listen stops
 
 Spiel can hand every finished Listen transcript to one of your Shortcuts, automatically,
