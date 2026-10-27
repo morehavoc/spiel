@@ -11,12 +11,14 @@ anywhere.
 - **Vocabulary.** Teach it names and jargon it gets wrong.
 - **History.** Your last 50 dictations, searchable.
 - **Shortcuts.** Run one of your Shortcuts automatically every time Listen stops, with the
-  transcript as its input. [How to set it up](docs/shortcuts.md).
+  transcript as its input. [How to set it up](https://morehavoc.com/spiel/shortcuts.html).
 - **Command line.** `spiel transcribe meeting.m4a` turns any audio or video file into
   text, Markdown, SRT, VTT or JSON. Built for scripts and AI agents.
 
 Speech recognition is NVIDIA's Parakeet running on the Neural Engine. Requires an
 Apple silicon Mac and macOS 14 or later.
+
+Help and guides: **https://morehavoc.com/spiel/**
 
 ## Get it
 
