@@ -10,6 +10,8 @@ anywhere.
 - **Listen.** ⌘⇧L records a whole meeting or talk to a Markdown transcript with timestamps.
 - **Vocabulary.** Teach it names and jargon it gets wrong.
 - **History.** Your last 50 dictations, searchable.
+- **Shortcuts.** Run one of your Shortcuts automatically every time Listen stops, with the
+  transcript as its input. [How to set it up](docs/shortcuts.md).
 - **Command line.** `spiel transcribe meeting.m4a` turns any audio or video file into
   text, Markdown, SRT, VTT or JSON. Built for scripts and AI agents.
 

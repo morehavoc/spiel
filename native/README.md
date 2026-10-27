@@ -122,7 +122,7 @@ screenshots." and does nothing else.
   Shortcuts and it runs automatically every time Listen stops, with the saved transcript
   file as its input (`shortcuts run <name> --input-path <file>`); a failure posts a
   notification. The iPhone app has the same setting in its ⋯ menu (it opens Shortcuts and
-  comes back).
+  comes back). User guide: [docs/shortcuts.md](../docs/shortcuts.md).
 - **Vocabulary** — edits `vocabulary.txt` in place (Save ⌘S, Revert, Show in Finder).
 
 **History…** keeps the last 50 dictations that produced text — inserted or not, since
