@@ -224,6 +224,8 @@ struct LiveView: View {
     @State private var toast: String?
     @State private var showNew = false
     @State private var askDownload = false
+    @State private var editingShortcut = false
+    @State private var shortcutName = ""
     @State private var askedDownload = false
     @State private var renaming = false
     @State private var newTitle = ""
@@ -269,6 +271,10 @@ struct LiveView: View {
                         Button { newTitle = model.title; renaming = true } label: { Label("Rename", systemImage: "pencil") }
                     }
                     TextSizeItems(size: $size)
+                    Divider()
+                    Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
+                        Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
@@ -280,6 +286,14 @@ struct LiveView: View {
             Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 600 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
         }
         .onAppear { if model.phase == .needsDownload && !askedDownload { askedDownload = true; askDownload = true } }
+        .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
+            TextField("Shortcut name", text: $shortcutName)
+            Button("Save") { ListenModel.stopShortcut = shortcutName; toast = ListenModel.stopShortcut == nil ? "No Shortcut" : "Saved" }
+            Button("None") { ListenModel.stopShortcut = nil; toast = "No Shortcut" }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Type the exact name of a Shortcut. Every time you stop, Spiel opens Shortcuts and runs it with the transcript as its input, then comes back.")
+        }
         .alert("Rename", isPresented: $renaming) {
             TextField("Title", text: $newTitle)
             Button("Save") { if !newTitle.trimmingCharacters(in: .whitespaces).isEmpty { model.title = newTitle } }

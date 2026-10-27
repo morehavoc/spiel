@@ -871,6 +871,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DiagnosticLog.write("listen finished: \(lastSession!) (\(report.diagnosis); restarts \(report.captureRestarts), paused \(Int(report.pausedSeconds)) s)")
         listenPanel.setDone(summary: summary, document: doc)
         updateStatusItem()
+        runListenStopShortcut()
+    }
+
+    /// 2.8: the user's chosen Shortcut gets the saved transcript, automatically.
+    /// Nothing runs when no transcript was saved or none is chosen.
+    private func runListenStopShortcut() {
+        guard let name = settings.listenStopShortcut else { return }
+        guard let file = listenURL else {
+            DiagnosticLog.write("listen stop shortcut \"\(name)\" skipped: the transcript was not saved")
+            Notifier.post(title: "Shortcut not run", body: "\(name) did not run because the transcript was not saved.")
+            return
+        }
+        DiagnosticLog.write("listen stop shortcut \"\(name)\" running on \(file.lastPathComponent)")
+        ListenShortcut.run(name: name, file: file) { r in
+            if r.ok {
+                DiagnosticLog.write("listen stop shortcut \"\(name)\" finished")
+            } else {
+                let why = r.timedOut ? "it was still running after 10 minutes and was stopped"
+                    : (r.stderr.isEmpty ? "exit \(r.status)" : r.stderr)
+                DiagnosticLog.write("listen stop shortcut \"\(name)\" FAILED: \(why)")
+                Notifier.post(title: "Shortcut \"\(name)\" failed", body: why)
+            }
+        }
     }
 
     private func copyListen() {
@@ -1468,6 +1491,10 @@ extension AppDelegate: NSWindowDelegate {
             self.historyModel.enabled = on
             DiagnosticLog.write("history \(on ? "ON" : "OFF") (existing entries kept until cleared)")
         }
+        m.setListenStopShortcut = { [weak self] name in
+            self?.settings.listenStopShortcut = name
+            DiagnosticLog.write("listen stop shortcut → \(name ?? "none")")
+        }
         m.clearHistory = { [weak self] in
             guard let self else { return }
             let alert = NSAlert()
@@ -1537,6 +1564,11 @@ extension AppDelegate: NSWindowDelegate {
         }
         m.diagnosticLogging = DiagnosticLog.isEnabled
         m.historyEnabled = settings.historyEnabled
+        m.listenStopShortcut = settings.listenStopShortcut ?? ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let names = ListenShortcut.list()
+            DispatchQueue.main.async { m.shortcutNames = names }
+        }
     }
 
     @objc fileprivate func showSettings() {
@@ -1692,6 +1724,7 @@ extension AppDelegate: NSWindowDelegate {
             ("Diagnostic logging", DiagnosticLog.isEnabled ? "on" : "off"),
             ("Open at Login", LaunchAtLogin.label(LaunchAtLogin.state())),
             ("History", settings.historyEnabled ? "on" : "off"),
+            ("Listen stop Shortcut", settings.listenStopShortcut == nil ? "none" : "set"),
             ("Vocabulary", vocabTerms),
             // Quotes stripped: the report blanks quoted spans, and this one is not private.
             ("Signature", Self.signatureSummary().replacingOccurrences(of: "\"", with: "")),

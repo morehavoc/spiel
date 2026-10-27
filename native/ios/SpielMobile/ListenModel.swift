@@ -216,7 +216,64 @@ final class ListenModel: ObservableObject {
             if !report.errors.isEmpty { DiagnosticLog.write("listen ended with errors: \(report.diagnosis)") }
             save()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            runStopShortcut()
         }
+    }
+
+    // MARK: - Shortcut when Listen stops
+
+    static let stopShortcutKey = "ListenStopShortcut"
+    /// The Shortcut run with the transcript every time Listen stops; nil = none.
+    static var stopShortcut: String? {
+        get {
+            let v = UserDefaults.standard.string(forKey: stopShortcutKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (v?.isEmpty ?? true) ? nil : v
+        }
+        set {
+            if let v = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
+                UserDefaults.standard.set(v, forKey: stopShortcutKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: stopShortcutKey)
+            }
+        }
+    }
+
+    /// iOS lets an app run a Shortcut only by opening the Shortcuts app with a URL, so
+    /// this switches to Shortcuts; x-success brings the user back to Spiel when it ends.
+    /// The transcript Markdown is the input text; a very long one goes by clipboard.
+    private func runStopShortcut() {
+        guard let name = Self.stopShortcut else { return }
+        guard let fileURL, let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            lastError = "\(name) did not run: the transcript was not saved."
+            return
+        }
+        guard UIApplication.shared.applicationState == .active else {
+            DiagnosticLog.write("stop shortcut skipped: Spiel was not in the foreground")
+            lastError = "\(name) did not run because Spiel was in the background when Listen stopped."
+            return
+        }
+        guard let url = Self.shortcutURL(name: name, text: text, pasteboard: { UIPasteboard.general.string = $0 }) else { return }
+        DiagnosticLog.write("stop shortcut running (\(text.utf8.count) bytes)")
+        UIApplication.shared.open(url) { [weak self] ok in
+            if !ok { self?.lastError = "Could not open Shortcuts to run \(name)." }
+        }
+    }
+
+    /// Characters other than these are percent-encoded; '+', '&' and '=' must not survive raw.
+    private static let queryAllowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+    static let maxURLText = 100_000
+
+    static func shortcutURL(name: String, text: String, pasteboard: (String) -> Void) -> URL? {
+        func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? "" }
+        var q = "name=\(enc(name))"
+        if text.utf8.count <= maxURLText {
+            q += "&input=text&text=\(enc(text))"
+        } else {
+            pasteboard(text)
+            q += "&input=clipboard"
+        }
+        q += "&x-success=\(enc("spiellisten://done"))&x-cancel=\(enc("spiellisten://done"))&x-error=\(enc("spiellisten://done"))"
+        return URL(string: "shortcuts://x-callback-url/run-shortcut?" + q)
     }
 
     private func openMic(into session: DictationSession) -> Bool {

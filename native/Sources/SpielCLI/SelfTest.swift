@@ -1452,6 +1452,7 @@ enum SelfTest {
         await tests25()
         await tests26()
         await tests27()
+        await tests28()
 
         print("\n\(checks - failures)/\(checks) checks passed")
         if failures > 0 {

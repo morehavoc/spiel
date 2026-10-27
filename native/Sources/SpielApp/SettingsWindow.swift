@@ -33,6 +33,9 @@ final class SettingsModel: ObservableObject {
     @Published var openAtLoginNote: String?
     @Published var diagnosticLogging = false
     @Published var historyEnabled = true
+    /// "" = none. `shortcutNames` is filled from `shortcuts list` when Settings opens.
+    @Published var listenStopShortcut = ""
+    @Published var shortcutNames: [String] = []
 
     @Published var vocabText = ""
     @Published var vocabSaved = ""
@@ -48,6 +51,7 @@ final class SettingsModel: ObservableObject {
     var toggleOpenAtLogin: () -> Void = {}
     var toggleDiagnosticLogging: () -> Void = {}
     var setHistoryEnabled: (Bool) -> Void = { _ in }
+    var setListenStopShortcut: (String?) -> Void = { _ in }
     var clearHistory: () -> Void = {}
     var refresh: () -> Void = {}
 
@@ -206,6 +210,20 @@ private struct GeneralSettings: View {
                     ForEach(EngineChoice.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 if !model.engineStatus.isEmpty { Text(model.engineStatus).font(.callout).foregroundStyle(.secondary) }
+            }
+            Section("When Listen stops") {
+                Picker("Run Shortcut", selection: Binding(
+                    get: { model.listenStopShortcut },
+                    set: { model.listenStopShortcut = $0; model.setListenStopShortcut($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("None").tag("")
+                    ForEach(model.shortcutNames, id: \.self) { Text($0).tag($0) }
+                    if !model.listenStopShortcut.isEmpty, !model.shortcutNames.contains(model.listenStopShortcut) {
+                        Text("\(model.listenStopShortcut) (not found)").tag(model.listenStopShortcut)
+                    }
+                }
+                Text("Runs automatically with the saved transcript file as its input, every time Listen stops.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             Section("History") {
                 Toggle("Keep the last \(DictationHistory.cap) dictations", isOn: Binding(

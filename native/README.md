@@ -118,7 +118,11 @@ screenshots." and does nothing else.
   says so (`⚠︎ Yeti isn't connected. Using the system default.`). Engine:
   Unified (default) / v3 / Apple, switched live (deferred to the end of a running
   session), falling back through the others as before. History on/off, Open at Login,
-  Diagnostic Logging.
+  Diagnostic Logging. **When Listen stops → Run Shortcut** (2.8): pick one of your
+  Shortcuts and it runs automatically every time Listen stops, with the saved transcript
+  file as its input (`shortcuts run <name> --input-path <file>`); a failure posts a
+  notification. The iPhone app has the same setting in its ⋯ menu (it opens Shortcuts and
+  comes back).
 - **Vocabulary** — edits `vocabulary.txt` in place (Save ⌘S, Revert, Show in Finder).
 
 **History…** keeps the last 50 dictations that produced text — inserted or not, since

@@ -140,6 +140,7 @@ public struct SpielSettings {
     public static let engineKey = "Engine"
     public static let historyEnabledKey = "HistoryEnabled"
     public static let setupCompletedKey = "SetupCompleted"
+    public static let listenStopShortcutKey = "ListenStopShortcut"
 
     /// Stored as `[keyCode, modifiers]`; the label is re-derived on read. A stored
     /// combo that fails the rules (hand-edited defaults, an older rule set) reads as
@@ -208,6 +209,17 @@ public struct SpielSettings {
     public var historyEnabled: Bool {
         get { (defaults.object(forKey: Self.historyEnabledKey) as? Bool) ?? true }
         nonmutating set { defaults.set(newValue, forKey: Self.historyEnabledKey) }
+    }
+    /// The Shortcut run with the saved transcript when Listen stops (2.8); nil = none.
+    public var listenStopShortcut: String? {
+        get {
+            let v = defaults.string(forKey: Self.listenStopShortcutKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (v?.isEmpty ?? true) ? nil : v
+        }
+        nonmutating set {
+            if let v = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty { defaults.set(v, forKey: Self.listenStopShortcutKey) }
+            else { defaults.removeObject(forKey: Self.listenStopShortcutKey) }
+        }
     }
     /// The first-run setup window was finished or dismissed (2.5). Unset on a
     /// fresh install; an upgrade with every permission already granted gets it set

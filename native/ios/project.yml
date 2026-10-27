@@ -43,7 +43,7 @@ targets:
       properties:
         CFBundleDisplayName: Spiel Listen
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "0.2.3"
+        CFBundleShortVersionString: "0.3.0"
         CFBundleVersion: "2"
         UILaunchScreen: {}
         NSCalendarsFullAccessUsageDescription: Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.
@@ -51,6 +51,9 @@ targets:
         NSMicrophoneUsageDescription: Spiel listens to the meeting you are in and writes it down. Audio never leaves this iPhone.
         UIBackgroundModes: [audio]
         UIFileSharingEnabled: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.morehavoc.spiel.mobile
+            CFBundleURLSchemes: [spiellisten]
         LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
     settings:
