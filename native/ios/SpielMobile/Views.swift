@@ -283,7 +283,7 @@ struct LiveView: View {
             Button("Download Now") { model.downloadModel() }
             Button("Later", role: .cancel) {}
         } message: {
-            Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 600 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
+            Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 500 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
         }
         .onAppear { if model.phase == .needsDownload && !askedDownload { askedDownload = true; askDownload = true } }
         .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
@@ -331,7 +331,7 @@ struct LiveView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .needsDownload:
             HomeHero(onNew: { askDownload = true }, buttonTitle: "Download speech model", buttonIcon: "arrow.down.circle.fill",
-                     note: "Spiel needs a one-time download of about 600 MB before it can listen. Wi-Fi recommended.")
+                     note: "Spiel needs a one-time download of about 500 MB before it can listen. Wi-Fi recommended.")
         case .failed(let text):
             VStack(spacing: 18) {
                 Text(text).foregroundStyle(Theme.record).multilineTextAlignment(.center)
@@ -523,7 +523,7 @@ struct HomeHero: View {
                         .background(Theme.ink, in: RoundedRectangle(cornerRadius: 40, style: .continuous))
                         .shadow(color: Theme.violet.opacity(0.35), radius: 30, y: 10)
                     Text("Spiel").font(.system(size: 40, weight: .bold, design: .rounded)).foregroundStyle(Theme.ink)
-                    Text("Live transcripts of the room you're in.\nNothing leaves this iPhone.")
+                    Text("Live transcripts of the room you're in.\nTranscribed right here on this iPhone.")
                         .font(.system(.callout, design: .rounded)).foregroundStyle(Theme.dim)
                         .multilineTextAlignment(.center)
                 }

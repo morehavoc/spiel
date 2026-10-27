@@ -82,7 +82,7 @@ final class ListenModel: ObservableObject {
             switch p.phase {
             case .listing: text = "Finding the speech model…"
             case .downloading:
-                text = "Downloading the speech model (about 600 MB, once)"; step = 1
+                text = "Downloading the speech model (about 500 MB, once)"; step = 1
             case .compiling:
                 text = "Preparing the speech model for the Neural Engine. This happens once and can take a few minutes."; step = 2
             }
@@ -118,7 +118,7 @@ final class ListenModel: ObservableObject {
     }
 
     /// The speech model is re-downloadable, so it stays out of iCloud/device backups
-    /// (Apple's data-storage rule; it would also add ~600 MB to every backup).
+    /// (Apple's data-storage rule; it would also add ~500 MB to every backup).
     /// Transcripts and kept audio live in Documents and ARE backed up.
     private static func excludeModelsFromBackup() {
         var dir = AsrModels.defaultCacheDirectory(for: .v3).deletingLastPathComponent()
