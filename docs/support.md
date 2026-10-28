@@ -7,27 +7,29 @@ nav_order: 9
 
 ## Check these first
 
-- [Troubleshooting](troubleshooting.md) for common problems.
-- [FAQ](faq.md) for languages, engines, disk space and offline use.
-- [Licensing](license.md) for trial, activation and seats.
+- [Troubleshooting](troubleshooting.md) covers common problems.
+- The [FAQ](faq.md) answers questions about languages, engines, disk space and offline use.
+- [Licensing](license.md) explains the trial, activation and seats.
 
-## Ask a question or report a problem
+## Email me
 
-Open an issue on [GitHub](https://github.com/morehavoc/spiel/issues). You need a free
-GitHub account.
+The best way to reach me is
+[spiel@christophermoravec.com](mailto:spiel@christophermoravec.com). Use it for license seat
+resets, refunds, and anything private.
 
-**Issues are public.** Anyone can read them. So:
+If it's a problem with the Mac app, choose **Help → Send Diagnostics…** and attach the zip it
+makes. It leaves out what you dictated, your transcripts, your history and your vocabulary.
 
-- **Don't post your license key, receipt, or private transcripts or dictations.**
-- If you need a license seat reset, say so in the issue, without the key.
-- On the Mac, **Help → Send Diagnostics…** makes a zip you can attach. It withholds what you
-  dictated, your transcripts and your vocabulary, but **once attached, it is public too.**
-  Only attach it if you're comfortable with that.
+The iPhone app has no Send Diagnostics. Tell me what happened, your iPhone model and iOS
+version, and the Spiel Listen version (the `spiel_version:` line in any transcript shows
+it).
 
-The iPhone app has no Send Diagnostics. Describe what happened, your iPhone model and iOS
-version, and the Spiel Listen version (any transcript's `spiel_version:` line shows it).
+## Report a bug or ask for a feature
+
+You can also open an issue on [GitHub](https://github.com/morehavoc/spiel/issues), which
+needs a free GitHub account. Issues are public, so don't post your license key, your
+receipt, diagnostics or any of your transcripts there; email those instead.
 
 ## Refunds
 
-- **Mac app:** within 14 days of purchase, reply to your Gumroad receipt.
-- **iPhone app:** free while in testing.
+For the Mac app, email me or reply to your Gumroad receipt within 14 days of purchase.
