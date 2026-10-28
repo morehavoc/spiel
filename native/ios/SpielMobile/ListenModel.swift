@@ -144,7 +144,7 @@ final class ListenModel: ObservableObject {
         guard phase == .ready, let session else { return }
         Task {
             guard await AVAudioApplication.requestRecordPermission() else {
-                lastError = "Microphone access is off. Settings → Spiel → Microphone."
+                lastError = "Microphone access is off. Settings → Spiel Listen → Microphone."
                 return
             }
             await session.setGlossary(Glossary.load())

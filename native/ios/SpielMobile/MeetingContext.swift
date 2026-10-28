@@ -43,7 +43,7 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
         #endif
         do {
             guard try await store.requestFullAccessToEvents() else {
-                calendarNote = "Calendar access is off (Settings › Spiel › Calendars)."
+                calendarNote = "Calendar access is off (Settings › Spiel Listen › Calendars)."
                 return
             }
         } catch {
@@ -71,7 +71,7 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
         switch manager.authorizationStatus {
         case .notDetermined: manager.requestWhenInUseAuthorization()
         case .denied, .restricted:
-            locationNote = "Location access is off (Settings › Spiel › Location)."
+            locationNote = "Location access is off (Settings › Spiel Listen › Location)."
             return
         default: break
         }
@@ -112,7 +112,7 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
             MainActor.assumeIsolated {
                 if s == .denied || s == .restricted {
                     self.locating = false
-                    self.locationNote = "Location access is off (Settings › Spiel › Location)."
+                    self.locationNote = "Location access is off (Settings › Spiel Listen › Location)."
                 }
             }
         }
