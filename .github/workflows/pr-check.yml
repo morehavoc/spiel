@@ -21,6 +21,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # Public repo: workflow logs are world-readable. Fail any workflow that prints an email/name field.
+      - name: No personal data printed by workflows
+        run: |
+          if grep -nE "print\(.*(email|firstName|lastName)" .github/workflows/*.yml; then
+            echo "::error::A workflow prints personal data into a public log."; exit 1
+          fi
       - name: Selftest
         working-directory: native
         run: |
