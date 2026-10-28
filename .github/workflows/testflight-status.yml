@@ -50,5 +50,6 @@ jobs:
                   print('  has build', bb['attributes']['version'])
               for t in get(f"/betaGroups/{g['id']}/betaTesters").get('data', []):
                   ta = t['attributes']
-                  print('  tester', ta.get('email'), 'state=' + str(ta.get('state')), 'invite=' + str(ta.get('inviteType')))
+                  # Public repo: logs are world-readable, so never print a tester's email or name.
+                  print('  tester', 'state=' + str(ta.get('state')), 'invite=' + str(ta.get('inviteType')))
           PY
