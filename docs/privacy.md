@@ -39,11 +39,11 @@ connection, the service on the other end sees your IP address.
 ### iPhone app
 
 - Speech model download from Hugging Face, once.
-- Add location. When the **Add location** switch is on, opening **New meeting** gets your
-  phone's location and sends it to Apple's geocoding service to turn it into a place name
-  (a place and town). This happens as soon as New meeting opens, even if the calendar event
-  has its own location and even if you then tap Cancel. The switch stays on for later
-  meetings until you turn it off.
+- Add location. With the **Add location** switch on, when you tap **Start listening** and
+  the calendar event didn't name a place, Spiel gets your phone's location and sends it to
+  Apple's geocoding service to turn it into a place name (a place and town). Nothing is
+  looked up before you start, or if you cancel. The switch stays on for later meetings
+  until you turn it off.
 
 ## What is stored on your device
 

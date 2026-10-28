@@ -26,6 +26,9 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
 
     private let store = EKEventStore()
     private let manager = CLLocationManager()
+    /// Called with the place name once a lookup finishes (used by ListenModel, which
+    /// looks the place up only after a meeting has started).
+    var onPlace: ((String) -> Void)?
 
     /// Events overlapping now, from 15 min ago to 30 min ahead, not all-day,
     /// nearest start first.
@@ -64,6 +67,16 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
         if meetings.isEmpty { calendarNote = "Nothing on your calendar right now." }
     }
 
+    /// Asks for When-In-Use permission without looking anything up, so the prompt
+    /// appears when the switch is turned on, not halfway into a meeting.
+    func requestPermissionIfNeeded() {
+        manager.delegate = self
+        if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+        else if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
+            locationNote = "Location access is off (Settings › Spiel Listen › Location)."
+        }
+    }
+
     func locate() {
         locationNote = nil
         manager.delegate = self
@@ -90,8 +103,10 @@ final class MeetingContext: NSObject, ObservableObject, CLLocationManagerDelegat
             let fallback = String(format: "%.4f, %.4f", loc.coordinate.latitude, loc.coordinate.longitude)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self.place = name.isEmpty ? fallback : name
+                    let found = name.isEmpty ? fallback : name
+                    self.place = found
                     self.locating = false
+                    self.onPlace?(found)
                 }
             }
         }

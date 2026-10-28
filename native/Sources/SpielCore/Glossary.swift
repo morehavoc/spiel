@@ -34,31 +34,29 @@ public struct Glossary: Sendable {
 
     public var count: Int { map.count }
 
-    /// Christopher's actual working vocabulary. Aliases are the plausible
-    /// mis-transcriptions, not every possible one -- an alias that collides with a
-    /// real English word does more harm than the miss it fixes.
+    /// Built-in terms every user gets: common tech names whose aliases are not
+    /// English words. A user's own terms go in the Vocabulary file (merged over these).
+    /// Aliases are plausible mis-transcriptions, not every possible one -- an alias
+    /// that collides with a real English word does more harm than the miss it fixes.
+    /// (Until 2.8.2 this list also carried the author's personal names; those now
+    /// live in his own vocabulary file.)
     public static let defaultEntries: [String: [String]] = [
-        // "ArcJS" observed from Parakeet on 2026-09-02 (Christopher said ArcGIS).
+        // "ArcJS" observed from Parakeet on 2026-09-02 (ArcGIS was said).
         "ArcGIS": ["arc gis", "arcgis", "ark gis", "arc jis", "arc g i s", "arcjs", "arc js", "arc j s"],
         // "g ojson" observed from Parakeet on 2026-09-02. Safe to alias: it is not
         // an English word, unlike "arc just" (Apple's ArcGIS miss), which is a
         // plausible bigram and is deliberately NOT listed.
         "GeoJSON": ["geo json", "geojson", "geo jason", "geo j son", "g ojson", "gojson"],
-        "Esri": ["esri", "ezri", "esry", "ess ri"],
-        "dymaptic": ["dymaptic", "die maptic", "dymatic", "dynamaptic", "di maptic"],
-        "AGOL": ["agol", "a gol", "a g o l"],
-        "Survey123": ["survey 123", "survey123", "survey one twenty three"],
-        "Whisperframe": ["whisper frame", "whisperframe"],
-        "ArcPy": ["arc py", "arcpy", "arc pie"],
         "GIS": ["g i s"],
-        "Parakeet": ["parakeet", "para keet"],
-        "Whisper": ["whisper"],
         "Xcode": ["x code", "xcode"],
         "macOS": ["mac os", "macos"],
-        "JAWS": ["jaws"],
-        "Nexus": ["nexus"],
-        "Tailscale": ["tail scale", "tailscale"],
+        "iOS": ["i o s"],
+        "GitHub": ["git hub", "github"],
+        "JavaScript": ["java script", "javascript"],
+        "TypeScript": ["type script", "typescript"],
+        "ChatGPT": ["chat gpt", "chat g p t", "chatgpt"],
         "Ollama": ["olama", "ollama", "oh lama"],
+        "Tailscale": ["tail scale", "tailscale"],
     ]
 
     // MARK: - User-editable vocabulary file

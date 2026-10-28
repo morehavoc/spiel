@@ -48,6 +48,7 @@ final class ListenModel: ObservableObject {
     private var interrupted = false
     private var recorder: AudioRecorder?
     private let meter = LevelMeter()
+    private let locator = MeetingContext()
 
     var isActive: Bool { phase == .recording || phase == .paused }
 
@@ -139,6 +140,18 @@ final class ListenModel: ObservableObject {
     }
 
     // MARK: - Controls
+
+    /// Looks up where the phone is (Apple geocoding) once the meeting has started, and
+    /// writes the place into the transcript when it arrives. Only called when the user
+    /// turned on Add location and the calendar event had no location of its own.
+    func addCurrentLocation() {
+        locator.onPlace = { [weak self] place in
+            guard let self, self.isActive, self.location == nil else { return }
+            self.location = place
+            self.save()
+        }
+        locator.locate()
+    }
 
     func start(title: String, location: String?, keepAudio: Bool) {
         guard phase == .ready, let session else { return }

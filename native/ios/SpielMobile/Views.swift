@@ -622,7 +622,11 @@ struct NewMeetingSheet: View {
             .themed()
             .safeAreaInset(edge: .bottom) {
                 Button {
-                    model.start(title: chosenTitle, location: addLocation ? chosenLocation : nil, keepAudio: keepAudio)
+                    let fromCalendar = calendarLocation
+                    model.start(title: chosenTitle, location: addLocation ? fromCalendar : nil, keepAudio: keepAudio)
+                    // The phone's position is looked up only now, after Start, and only
+                    // when the calendar event didn't name a place.
+                    if addLocation && fromCalendar == nil { model.addCurrentLocation() }
                     dismiss()
                 } label: { Label("Start listening", systemImage: "mic.fill") }
                 .buttonStyle(GradientButtonStyle())
@@ -639,9 +643,9 @@ struct NewMeetingSheet: View {
             now = Date()
             await ctx.loadMeetings(now: now)
             if let first = ctx.meetings.first, choice == .dateTime { choice = .meeting(first) }
-            if addLocation { ctx.locate() }
+            if addLocation { ctx.requestPermissionIfNeeded() }
         }
-        .onChange(of: addLocation) { if addLocation, ctx.place == nil { ctx.locate() } }
+        .onChange(of: addLocation) { if addLocation { ctx.requestPermissionIfNeeded() } }
     }
 
     private var chosenTitle: String {
@@ -652,17 +656,15 @@ struct NewMeetingSheet: View {
         }
     }
 
-    /// The calendar event's own location wins (it names the room); else where the phone is.
-    private var chosenLocation: String? {
+    /// The calendar event's own location (it names the room), if the title came from one.
+    private var calendarLocation: String? {
         if case .meeting(let m) = choice, let l = m.location { return l }
-        return ctx.place
+        return nil
     }
 
     private var locationText: String {
         if case .meeting(let m) = choice, let l = m.location { return "\(l) (from the calendar)" }
-        if let p = ctx.place { return p }
-        if ctx.locating { return "Finding where you are…" }
-        return ctx.locationNote ?? "Location unavailable"
+        return ctx.locationNote ?? "Where you are, looked up when you start"
     }
 
     private func section<C: View>(_ label: String, @ViewBuilder _ c: () -> C) -> some View {

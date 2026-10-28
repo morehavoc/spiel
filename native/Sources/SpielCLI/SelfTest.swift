@@ -1183,13 +1183,17 @@ enum SelfTest {
         let g = Glossary()
         expect(g.apply(to: "publish the arc gis layer as geo json"),
                "publish the ArcGIS layer as GeoJSON", "multi-word terms are joined and canonicalised")
-        expect(g.apply(to: "send it to dymaptic."), "send it to dymaptic.", "trailing period survives")
+        expect(g.apply(to: "push it to git hub."), "push it to GitHub.", "trailing period survives")
         expect(g.apply(to: "is it geo json?"), "is it GeoJSON?", "trailing question mark survives")
-        expect(g.apply(to: "ESRI and esri and Esri"), "Esri and Esri and Esri", "case-insensitive single tokens")
-        expect(g.apply(to: "open survey 123 now"), "open Survey123 now", "longest span wins")
+        expect(g.apply(to: "MACOS and macos and macOS"), "macOS and macOS and macOS", "case-insensitive single tokens")
+        expect(g.apply(to: "open chat g p t now"), "open ChatGPT now", "longest span wins")
         // Real engine misses observed 2026-09-02 on jaws-mini.
         expect(g.apply(to: "as G OJSON,"), "as GeoJSON,", "repairs Parakeet's 'G OJSON'")
-        expect(g.apply(to: "the Dimaptic team"), "the dymaptic team", "repairs Parakeet's 'Dimaptic'")
+        for personal in ["JAWS", "Nexus", "dymaptic", "Whisper", "Whisperframe"] {
+            expect(Glossary.defaultEntries[personal] == nil ? "absent" : "present", "absent",
+                   "built-ins carry no personal name (\(personal)): every user gets this list")
+        }
+        expect(g.apply(to: "a quiet whisper"), "a quiet whisper", "an ordinary word is never capitalised by a built-in")
         expect(g.apply(to: ""), "", "empty string is safe")
         expect(g.apply(to: "   "), "   ", "whitespace is safe")
 

@@ -36,7 +36,8 @@ After that, Spiel works without the internet.
 1. Tap **New meeting**.
 2. Pick a title: the meeting on your calendar right now, the date and time, or your own.
 3. If you want, turn on **Add location** to note where the meeting is. Spiel uses the
-   calendar event's location if it has one, otherwise where your phone is. The switch stays
+   calendar event's location if it has one; otherwise it looks up where your phone is once
+   you start. The switch stays
    on for your next meeting until you turn it off.
 4. If you want, turn on **Keep audio** to save the recording next to the transcript (about
    14 MB an hour).
