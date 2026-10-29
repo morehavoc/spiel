@@ -253,7 +253,10 @@ final class ListenModel: ObservableObject {
 
     /// iOS lets an app run a Shortcut only by opening the Shortcuts app with a URL, so
     /// this switches to Shortcuts; x-success brings the user back to Spiel when it ends.
-    /// The transcript Markdown is the input text; a very long one goes by clipboard.
+    /// A transcript that fits in the URL is passed as the Shortcut's input text; a longer
+    /// one is not passed at all (never via the clipboard), and the Shortcut reads it with
+    /// the "Get Latest Spiel Transcript" action (GetLatestTranscriptIntent), which works
+    /// at any length.
     private func runStopShortcut() {
         guard let name = Self.stopShortcut else { return }
         guard let fileURL, let text = try? String(contentsOf: fileURL, encoding: .utf8) else {
@@ -265,8 +268,8 @@ final class ListenModel: ObservableObject {
             lastError = "\(name) did not run because Spiel was in the background when Listen stopped."
             return
         }
-        guard let url = Self.shortcutURL(name: name, text: text, pasteboard: { UIPasteboard.general.string = $0 }) else { return }
-        DiagnosticLog.write("stop shortcut running (\(text.utf8.count) bytes)")
+        guard let url = Self.shortcutURL(name: name, text: text) else { return }
+        DiagnosticLog.write("stop shortcut running (\(text.utf8.count) bytes, \(text.utf8.count <= Self.maxURLText ? "passed as input" : "too long to pass; use Get Latest Spiel Transcript"))")
         UIApplication.shared.open(url) { [weak self] ok in
             if !ok { self?.lastError = "Could not open Shortcuts to run \(name)." }
         }
@@ -276,14 +279,11 @@ final class ListenModel: ObservableObject {
     private static let queryAllowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
     static let maxURLText = 100_000
 
-    static func shortcutURL(name: String, text: String, pasteboard: (String) -> Void) -> URL? {
+    static func shortcutURL(name: String, text: String) -> URL? {
         func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? "" }
         var q = "name=\(enc(name))"
         if text.utf8.count <= maxURLText {
             q += "&input=text&text=\(enc(text))"
-        } else {
-            pasteboard(text)
-            q += "&input=clipboard"
         }
         q += "&x-success=\(enc("spiellisten://done"))&x-cancel=\(enc("spiellisten://done"))&x-error=\(enc("spiellisten://done"))"
         return URL(string: "shortcuts://x-callback-url/run-shortcut?" + q)

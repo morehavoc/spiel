@@ -292,7 +292,7 @@ struct LiveView: View {
             Button("None") { ListenModel.stopShortcut = nil; toast = "No Shortcut" }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Type the exact name of a Shortcut. Every time you stop, Spiel opens Shortcuts and runs it with the transcript as its input, then comes back. In Shortcuts, turn on ⓘ → Show in Share Sheet so it can receive the transcript.")
+            Text("Type the exact name of a Shortcut. Every time you stop, Spiel opens Shortcuts, runs it, then comes back. Start the Shortcut with the Get Latest Spiel Transcript action to read the transcript.")
         }
         .alert("Rename", isPresented: $renaming) {
             TextField("Title", text: $newTitle)

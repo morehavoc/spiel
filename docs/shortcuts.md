@@ -28,11 +28,9 @@ details.
 
 ### On the iPhone
 
-1. Open the Shortcut, tap **ⓘ** at the bottom, and turn on **Show in Share Sheet**.
-2. The **Receive _Any_ input from _Share Sheet_** block appears at the top. Set it to **Text**.
-3. Use **Shortcut Input** in your actions.
-
-If the Shortcut runs but seems to get nothing, this step is usually what's missing.
+Start the Shortcut with Spiel's own action: search the action list for **Get Latest Spiel
+Transcript** (Spiel Listen 0.3.5 or later) and put it first. It hands the rest of the Shortcut
+the newest transcript as text, however long the meeting was. Nothing else needs turning on.
 
 ## 2. Pick it in Spiel
 
@@ -44,9 +42,16 @@ If the Shortcut runs but seems to get nothing, this step is usually what's missi
 
 ## Example: save each transcript to Notes
 
-1. **Receive** input from Quick Actions (Mac) or the Share Sheet (iPhone), as in step 1.
+On the Mac:
+
+1. **Receive** input from Quick Actions, as in step 1.
 2. **Get Text from** Shortcut Input.
 3. **Create Note** with the Text.
+
+On the iPhone:
+
+1. **Get Latest Spiel Transcript**.
+2. **Create Note** with the Latest Transcript.
 
 ## What the Shortcut receives
 
@@ -62,10 +67,12 @@ Actions that work on text, such as **Get Text from Input**, **Show Result** or
 whole transcript as text. If you want the file's path or name, add **Get Details of Files**,
 pass it Shortcut Input, and choose **File Path** (or **Name**).
 
-On the iPhone the input is the transcript as text, with no file. iOS only lets an app run a
-Shortcut by opening the Shortcuts app, so your phone switches to Shortcuts, runs it, and
-comes back to Spiel. A very long transcript (over about 100 KB) goes through the clipboard
-instead, which replaces whatever you had copied.
+On the iPhone, **Get Latest Spiel Transcript** gives you the transcript as text. iOS only lets
+an app run a Shortcut by opening the Shortcuts app, so your phone switches to Shortcuts, runs
+it, and comes back to Spiel. Spiel also passes shorter transcripts as Shortcut Input, so older
+Shortcuts built that way keep working, but a transcript over about 100 KB (a meeting of two
+hours or more) is too long to pass that way. The action works at any length, and Spiel never
+puts the transcript on your clipboard.
 
 ## When it doesn't run
 
