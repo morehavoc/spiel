@@ -5,6 +5,11 @@ import SpielCore
 extension SelfTest {
 
     static func tests28() async {
+        print("\n2.8.3 — Help menu links")
+        expect(SpielLinks.help.absoluteString, "https://morehavoc.com/spiel/", "Spiel Help opens the help site")
+        expect(SpielLinks.supportMail(version: "2.8.3 (17)").absoluteString,
+               "mailto:spiel@christophermoravec.com?subject=Spiel%202.8.3%20(17)", "Email Support names the version in the subject")
+
         print("\n2.8 — Shortcut when Listen stops")
         let file = URL(fileURLWithPath: "/tmp/My Meeting 2026-10-27.md")
         expect(ListenShortcut.arguments(name: "Send to Jaws", file: file).joined(separator: "|"),

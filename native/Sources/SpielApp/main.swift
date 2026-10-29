@@ -1159,6 +1159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return item
         }
         _ = addHelp("About Spiel", #selector(showAbout))
+        _ = addHelp("Spiel Help", #selector(openHelpSite))
+        _ = addHelp("Email Support…", #selector(emailSupport))
         _ = addHelp("Setup…", #selector(showSetupFromMenu))
         _ = addHelp("Install Command Line Tool…", #selector(installCommandLineTool))
         helpMenu.addItem(.separator())
@@ -1569,6 +1571,14 @@ extension AppDelegate: NSWindowDelegate {
             let names = ListenShortcut.list()
             DispatchQueue.main.async { m.shortcutNames = names }
         }
+    }
+
+    @objc fileprivate func openHelpSite() {
+        NSWorkspace.shared.open(SpielLinks.help)
+    }
+
+    @objc fileprivate func emailSupport() {
+        NSWorkspace.shared.open(SpielLinks.supportMail(version: "\(SpielVersion.short) (\(SpielVersion.build))"))
     }
 
     @objc fileprivate func showSettings() {

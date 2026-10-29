@@ -15,7 +15,8 @@ nav_order: 9
 
 The best way to reach me is
 [spiel@christophermoravec.com](mailto:spiel@christophermoravec.com). Use it for license seat
-resets, refunds, and anything private.
+resets, refunds, and anything private. In the Mac app (2.8.3 or later), **Help → Email Support…**
+starts the email with your Spiel version in the subject.
 
 If it's a problem with the Mac app, choose **Help → Send Diagnostics…** and attach the zip it
 makes. It leaves out what you dictated, your transcripts, your history and your vocabulary.
