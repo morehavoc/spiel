@@ -18,6 +18,6 @@ public enum SpielLinks {
 }
 
 public enum SpielVersion {
-    public static let short = "2.8.3"
-    public static let build = "17"
+    public static let short = "2.9.0"
+    public static let build = "18"
 }

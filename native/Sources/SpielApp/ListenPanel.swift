@@ -79,6 +79,7 @@ final class ListenPanel {
         pauseButton.isHidden = false
         pauseButton.title = "Pause"
         stopButton.isHidden = false
+        stopButton.title = "Stop"
         screenshotButton.isHidden = false
         screenshotButton.isEnabled = true
         copyButton.isHidden = true
@@ -96,6 +97,21 @@ final class ListenPanel {
         tintTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.retint() }
         }
+    }
+
+    /// The same panel for an audio file: no meter, Pause or Screenshot, and Stop cancels.
+    func beginFile(title: String, document: TranscriptDocument) {
+        begin(title: title, document: document)
+        meter.isHidden = true
+        pauseButton.isHidden = true
+        screenshotButton.isHidden = true
+        stopButton.title = "Cancel"
+        counterLabel.stringValue = "Transcribing…"
+    }
+
+    func setFileProgress(done: TimeInterval, total: TimeInterval, words: Int) {
+        let share = total > 0 ? "\(min(100, Int(done / total * 100)))%" : "\(Int(done) / 60) min"
+        counterLabel.stringValue = "Transcribing · \(share) · \(words.formatted()) words"
     }
 
     func setPaused(_ paused: Bool) {

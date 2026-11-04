@@ -27,6 +27,7 @@ targets:
       - path: ../Sources/SpielCore/VoiceActivityDetector.swift
       - path: ../Sources/SpielCore/AudioSink.swift
       - path: ../Sources/SpielCore/DictationSession.swift
+      - path: ../Sources/SpielCore/FileTranscription.swift
       - path: ../Sources/SpielCore/ParakeetTranscriber.swift
       - path: ../Sources/SpielCore/ModelLoadProgress.swift
       - path: ../Sources/SpielCore/TranscriptDocument.swift
@@ -43,7 +44,7 @@ targets:
       properties:
         CFBundleDisplayName: Spiel Listen
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "0.3.5"
+        CFBundleShortVersionString: "0.4.0"
         CFBundleVersion: "2"
         UILaunchScreen: {}
         NSCalendarsFullAccessUsageDescription: Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.

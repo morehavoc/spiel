@@ -203,6 +203,9 @@ public actor DictationSession {
     private var lastSpeechEndSample = -1
     private var peak: Float = 0
     private var segmentsClosed = 0
+    private var segmentsSpawned = 0
+    /// Bumped by each segment task as it ends, which is not on the actor.
+    private let segmentsFinished = Tally()
     private var errors: [String] = []
     private var startedAt = Date()
     private var pausedSeconds: Double = 0
@@ -312,6 +315,8 @@ public actor DictationSession {
         lastSpeechEndSample = -1
         peak = 0
         segmentsClosed = 0
+        segmentsSpawned = 0
+        segmentsFinished.reset()
         errors.removeAll()
         startedAt = Date()
         pausedSeconds = 0
@@ -343,6 +348,12 @@ public actor DictationSession {
     /// same timeline as the speech around it.
     public var audioSeconds: Double { Double(receivedSamples) / AudioCapture.sampleRate }
     public func noteCaptureRestart() { captureRestarts += 1 }
+
+    /// For a file reader pacing itself: seconds of audio the session has taken, and
+    /// segments closed but not yet through the engine.
+    public var backlog: (takenSeconds: Double, segmentsWaiting: Int) {
+        (audioSeconds, segmentsSpawned - segmentsFinished.value)
+    }
 
     private func processFrame(_ frame: [Float]) async {
         guard let vad else { return }
@@ -490,7 +501,10 @@ public actor DictationSession {
         // `TranscriptAssembler` still reorders on index — defence in depth, and it is
         // what keeps a failed segment from swallowing the ones after it.
         let previous = inFlight.last
+        let finished = segmentsFinished
+        segmentsSpawned += 1
         let task = Task { [weak self, transcriber, assembler, glossary, eventHandler] in
+            defer { finished.add() }
             if let previous { _ = await previous.value }
             if Task.isCancelled { return }
             if dropContext { await transcriber.resetContext() }
@@ -580,4 +594,13 @@ public actor DictationSession {
         return report
     }
 
+}
+
+/// A counter segment tasks can bump without hopping onto the session actor.
+private final class Tally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+    func add() { lock.lock(); n += 1; lock.unlock() }
+    func reset() { lock.lock(); n = 0; lock.unlock() }
 }

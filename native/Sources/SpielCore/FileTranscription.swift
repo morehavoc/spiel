@@ -23,9 +23,16 @@ public enum AudioFileReader {
         }
     }
 
-    /// Returns the number of samples delivered. `chunk` is called in file order.
+    /// The file's length in seconds, for a progress bar. nil = the container does not say.
+    public static func duration(_ url: URL) async -> Double? {
+        guard let d = try? await AVURLAsset(url: url).load(.duration), d.isNumeric, d.seconds > 0 else { return nil }
+        return d.seconds
+    }
+
+    /// Returns the number of samples delivered. `chunk` is called in file order and
+    /// awaited, so a slow consumer slows the decoder (see `FileTranscriber.feed`).
     @discardableResult
-    public static func read(_ url: URL, chunk: ([Float]) -> Void) async throws -> Int {
+    public static func read(_ url: URL, chunk: ([Float]) async throws -> Void) async throws -> Int {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
             throw ReadError.missing(url.path)
@@ -41,10 +48,10 @@ public enum AudioFileReader {
             throw ReadError.unreadable("\(url.lastPathComponent): \(error.localizedDescription)")
         }
         guard let track = tracks.first else { throw ReadError.noAudio(url.lastPathComponent) }
-        return try drain(asset: asset, track: track, name: url.lastPathComponent, chunk: chunk)
+        return try await drain(asset: asset, track: track, name: url.lastPathComponent, chunk: chunk)
     }
 
-    private static func drain(asset: AVAsset, track: AVAssetTrack, name: String, chunk: ([Float]) -> Void) throws -> Int {
+    private static func drain(asset: AVAsset, track: AVAssetTrack, name: String, chunk: ([Float]) async throws -> Void) async throws -> Int {
         let reader: AVAssetReader
         do { reader = try AVAssetReader(asset: asset) } catch {
             throw ReadError.unreadable("\(name): \(error.localizedDescription)")
@@ -78,7 +85,7 @@ public enum AudioFileReader {
             }
             guard status == kCMBlockBufferNoErr else { throw ReadError.unreadable("\(name): block copy failed (\(status))") }
             total += count
-            chunk(samples)
+            try await chunk(samples)
         }
         if reader.status == .failed {
             throw ReadError.unreadable("\(name): \(reader.error?.localizedDescription ?? "decode failed")")
@@ -152,7 +159,7 @@ public struct FileTranscript: Sendable, Equatable {
         paragraphs.map { $0.map(\.text).joined(separator: " ") }.joined(separator: "\n\n")
     }
 
-    public var words: Int { DictationHistory.wordCount(text) }
+    public var words: Int { text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count }
 
     public enum Format: String, CaseIterable, Sendable {
         case text, md, srt, vtt, json
@@ -279,12 +286,43 @@ public enum FileTranscriber {
         public var peak: Float
     }
 
+    /// How far the decoder may run ahead of the session. A file decodes far faster
+    /// than the engine transcribes and the sink is unbounded, so without this a long
+    /// file sits in memory whole, which gets an iPhone app killed. Back-pressure is on
+    /// what the session has NOT taken, never on text released: silence releases none.
+    static let maxUnreadSeconds = 20.0
+    static let maxSegmentsWaiting = 3
+
+    /// Streams a file through a session that is already reset, finishes it and returns
+    /// the report. Events go to the session's existing handler, so the apps get the
+    /// same `.textReleased` a live mic gives them. Cancelling throws `CancellationError`
+    /// and leaves the session needing a `reset()`.
+    /// `progress(sentSeconds, totalSeconds)`: total is 0 when the file does not say.
+    public static func feed(_ url: URL, session: DictationSession,
+                            progress: (@Sendable (Double, Double) -> Void)? = nil) async throws -> DictationSession.Report {
+        let total = await AudioFileReader.duration(url) ?? 0
+        var sent = 0.0
+        try await AudioFileReader.read(url) { samples in
+            session.sink.submit(samples)
+            sent += Double(samples.count) / AudioCapture.sampleRate
+            progress?(sent, total)
+            while true {
+                try Task.checkCancellation()
+                let (taken, waiting) = await session.backlog
+                if sent - taken < maxUnreadSeconds && waiting < maxSegmentsWaiting { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        return await session.finishWithReport()
+    }
+
     /// `progress(doneSeconds, totalSeconds)` fires as each segment lands.
     public static func run(_ url: URL, displayName: String, engine: String, session: DictationSession,
                            progress: (@Sendable (Double, Double) -> Void)? = nil) async throws -> Outcome {
         await session.reset()
         let box = Box()
         let total = Box2()
+        total.value = await AudioFileReader.duration(url) ?? 0
         await session.setEventHandler { event in
             switch event {
             case .textReleased(let t, let start, _, let end):
@@ -295,11 +333,9 @@ public enum FileTranscriber {
             default: break
             }
         }
-        let samples = try await AudioFileReader.read(url) { session.sink.submit($0) }
-        total.value = Double(samples) / AudioCapture.sampleRate
-        let report = await session.finishWithReport()
+        let report = try await feed(url, session: session)
         let (segments, errors) = box.snapshot
-        let t = FileTranscript(file: displayName, durationSeconds: Double(samples) / AudioCapture.sampleRate,
+        let t = FileTranscript(file: displayName, durationSeconds: report.audioSeconds,
                                engine: engine, segments: segments.sorted { $0.start < $1.start },
                                errors: errors.isEmpty ? report.errors : errors)
         return Outcome(transcript: t, diagnosis: fileDiagnosis(audioSeconds: report.audioSeconds, peak: report.peak,

@@ -16,6 +16,8 @@ final class ListenModel: ObservableObject {
         case ready
         case recording
         case paused
+        /// An audio file is going through the session in place of the mic.
+        case transcribing
         case failed(String)
     }
 
@@ -36,6 +38,8 @@ final class ListenModel: ObservableObject {
     /// step 2 = preparing for the Neural Engine (no fraction exists for it; shown indeterminate).
     struct LoadStep: Equatable { var step: Int; var fraction: Double?; var since: Date }
     @Published private(set) var loadStep: LoadStep?
+    /// 0…1 through the audio file; nil while the file is still being copied in.
+    @Published private(set) var fileProgress: Double?
 
     private var session: DictationSession?
     private let capture = AudioCapture()
@@ -49,6 +53,9 @@ final class ListenModel: ObservableObject {
     private var recorder: AudioRecorder?
     private let meter = LevelMeter()
     private let locator = MeetingContext()
+    private var sourceFile: String?
+    private var fileSeconds: Double?
+    private var fileTask: Task<Void, Never>?
 
     var isActive: Bool { phase == .recording || phase == .paused }
 
@@ -110,6 +117,10 @@ final class ListenModel: ObservableObject {
         phase = .ready
         #if DEBUG
         if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
+            if let path = ProcessInfo.processInfo.environment["SPIEL_AUTOFILE"] {
+                transcribeFile(URL(fileURLWithPath: path))
+                return
+            }
             start(title: "Design review", location: "Workshop, Portland", keepAudio: true)
             if let secs = Double(ProcessInfo.processInfo.environment["SPIEL_AUTOSTOP"] ?? "") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + secs) { MainActor.assumeIsolated { self.stop() } }
@@ -170,6 +181,8 @@ final class ListenModel: ObservableObject {
             fileURL = nil
             self.title = title.isEmpty ? Self.dateTitle(started) : title
             self.location = location
+            sourceFile = nil
+            fileSeconds = nil
             audioURL = nil
             recorder = nil
             if keepAudio {
@@ -231,6 +244,102 @@ final class ListenModel: ObservableObject {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             runStopShortcut()
         }
+    }
+
+    // MARK: - Transcribe an audio file
+
+    /// Same session, document and saved transcript as a meeting; only the samples differ.
+    /// The picked file is copied in first: Files can hand over an iCloud file that is
+    /// not on the phone yet, and the coordinated copy is what fetches it.
+    func transcribeFile(_ picked: URL) {
+        guard phase == .ready, let session else { return }
+        phase = .transcribing
+        fileProgress = nil
+        doc = TranscriptDocument()
+        revision += 1
+        let started = Date()
+        startedAt = started
+        endedAt = nil
+        fileURL = nil
+        title = picked.deletingPathExtension().lastPathComponent
+        location = nil
+        audioURL = nil
+        recorder = nil
+        sourceFile = picked.lastPathComponent
+        fileSeconds = nil
+        consecutiveFailures = 0
+        lastError = nil
+        UIApplication.shared.isIdleTimerDisabled = true
+        fileTask = Task {
+            var copy: URL?
+            defer { if let copy { try? FileManager.default.removeItem(at: copy.deletingLastPathComponent()) } }
+            do {
+                let local = try await Task.detached { try Self.localCopy(of: picked) }.value
+                copy = local
+                try Task.checkCancellation()
+                await session.setGlossary(Glossary.load())
+                await session.reset()
+                fileProgress = 0
+                let report = try await FileTranscriber.feed(local, session: session) { done, total in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.fileSeconds = total > 0 ? total : done
+                            self.fileProgress = total > 0 ? min(done / total, 1) : nil
+                        }
+                    }
+                }
+                fileSeconds = report.audioSeconds
+                endedAt = report.endedAt
+                if !report.errors.isEmpty { DiagnosticLog.write("file ended with errors: \(report.diagnosis)") }
+                if doc.isEmpty {
+                    lastError = "No speech found: " + FileTranscriber.fileDiagnosis(
+                        audioSeconds: report.audioSeconds, peak: report.peak, segments: report.segments, errors: report.errors)
+                } else {
+                    save()
+                }
+            } catch is CancellationError {
+                await session.reset()
+                // A partial transcript would read as a whole one later.
+                if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+                fileURL = nil
+                doc = TranscriptDocument()
+                startedAt = nil
+                sourceFile = nil
+                DiagnosticLog.write("file transcription cancelled")
+            } catch {
+                await session.reset()
+                DiagnosticLog.write("file transcription failed: \(error)")
+                lastError = "Could not finish that file: \(error)"
+                endedAt = Date()
+                if !doc.isEmpty { save() }
+            }
+            UIApplication.shared.isIdleTimerDisabled = false
+            fileProgress = nil
+            fileTask = nil
+            phase = .ready
+        }
+    }
+
+    func cancelFile() { fileTask?.cancel() }
+
+    /// `nonisolated`: the copy can be slow and must not run on the main thread.
+    private nonisolated static func localCopy(of url: URL) throws -> URL {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The name is kept: AVFoundation picks its parser by extension.
+        let dest = dir.appendingPathComponent(url.lastPathComponent)
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinatorError) { source in
+            do { try FileManager.default.copyItem(at: source, to: dest) } catch { copyError = error }
+        }
+        if let e = coordinatorError ?? copyError {
+            try? FileManager.default.removeItem(at: dir)
+            throw e
+        }
+        return dest
     }
 
     // MARK: - Shortcut when Listen stops
@@ -335,7 +444,7 @@ final class ListenModel: ObservableObject {
             doc.append(text: t, startOffset: at, gapBefore: gap)
             consecutiveFailures = 0
             revision += 1
-            if doc.paragraphs.count != before || !isActive { save() }
+            if doc.paragraphs.count != before || (!isActive && phase != .transcribing) { save() }
         case .error(let e, let at, let secs):
             DiagnosticLog.write("listen segment error: \(e)")
             doc.noteMissed(seconds: secs, atOffset: at)
@@ -357,7 +466,7 @@ final class ListenModel: ObservableObject {
             title: title, startedAt: startedAt, endedAt: endedAt ?? Date(),
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev") (iPhone)",
             inputDevice: AudioCapture.currentInputName, engine: "parakeet-tdt-0.6b-v3",
-            location: location, audio: audioURL?.lastPathComponent)
+            location: location, audio: audioURL?.lastPathComponent, sourceFile: sourceFile, fileSeconds: fileSeconds)
         do {
             try TranscriptStore.save(doc.render(frontmatter: fm), to: url, replacing: fileURL)
             fileURL = url

@@ -1,6 +1,7 @@
 import AVFoundation
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 @main
 struct SpielMobileApp: App {
@@ -223,6 +224,7 @@ struct LiveView: View {
     @State private var jumpTo: Int?
     @State private var toast: String?
     @State private var showNew = false
+    @State private var pickingFile = false
     @State private var askDownload = false
     @State private var editingShortcut = false
     @State private var shortcutName = ""
@@ -272,6 +274,8 @@ struct LiveView: View {
                     }
                     TextSizeItems(size: $size)
                     Divider()
+                    Button { pickingFile = true } label: { Label("Transcribe Audio File", systemImage: "waveform.badge.plus") }
+                        .disabled(model.phase != .ready)
                     Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
                         Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
                     }
@@ -279,6 +283,9 @@ struct LiveView: View {
             }
         }
         .sheet(isPresented: $showNew) { NewMeetingSheet().environmentObject(model) }
+        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.audio, .movie]) { result in
+            if case .success(let url) = result { model.transcribeFile(url) }
+        }
         .alert("Download the speech model?", isPresented: $askDownload) {
             Button("Download Now") { model.downloadModel() }
             Button("Later", role: .cancel) {}
@@ -341,11 +348,12 @@ struct LiveView: View {
             .padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
             if model.startedAt == nil {
-                HomeHero(onNew: { showNew = true })
+                HomeHero(onNew: { showNew = true }, onFile: { pickingFile = true })
             } else if model.doc.isEmpty {
                 VStack(spacing: 18) {
                     WaveBars(level: model.level, live: model.phase == .recording, barWidth: 8, height: 70)
-                    Text(model.isActive ? "Listening. Words appear a moment after each pause." : "Nothing was heard.")
+                    Text(model.phase == .transcribing ? "Transcribing…"
+                         : model.isActive ? "Listening. Words appear a moment after each pause." : "Nothing was heard.")
                         .font(.system(.callout, design: .rounded)).foregroundStyle(Theme.dim)
                         .multilineTextAlignment(.center).padding(.horizontal, 40)
                 }
@@ -357,7 +365,31 @@ struct LiveView: View {
         }
     }
 
-    private var controls: some View {
+    @ViewBuilder private var controls: some View {
+        if model.phase == .transcribing { fileControls } else { meetingControls }
+    }
+
+    private var fileControls: some View {
+        VStack(spacing: 10) {
+            if let f = model.fileProgress {
+                ProgressBar(fraction: f, label: "Transcribing")
+            } else {
+                IndeterminateBar()
+            }
+            HStack {
+                Text(model.fileProgress.map { "\(Int($0 * 100))% · \(model.doc.wordCount) words" } ?? "Getting the file…")
+                    .font(.caption.monospacedDigit()).foregroundStyle(Theme.dim)
+                Spacer()
+                Button("Cancel", role: .cancel) { model.cancelFile() }.font(.callout.weight(.semibold))
+            }
+            Text("Keep Spiel open until it finishes.").font(.footnote).foregroundStyle(Theme.dim)
+        }
+        .padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 6)
+        .background(.ultraThinMaterial.opacity(0.9))
+        .overlay(alignment: .top) { Rectangle().fill(Theme.cardStroke).frame(height: 1) }
+    }
+
+    private var meetingControls: some View {
         VStack(spacing: 10) {
             if let err = model.lastError {
                 Text(err).font(.footnote).foregroundStyle(Theme.record).multilineTextAlignment(.center)
@@ -476,6 +508,7 @@ struct LoadProgress: View {
 
 struct ProgressBar: View {
     let fraction: Double
+    var label = "Download"
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
@@ -485,7 +518,7 @@ struct ProgressBar: View {
             }
         }
         .frame(height: 10)
-        .accessibilityElement().accessibilityLabel("Download").accessibilityValue("\(Int(fraction * 100)) percent")
+        .accessibilityElement().accessibilityLabel(label).accessibilityValue("\(Int(fraction * 100)) percent")
     }
 }
 
@@ -509,6 +542,7 @@ struct IndeterminateBar: View {
 
 struct HomeHero: View {
     let onNew: () -> Void
+    var onFile: (() -> Void)?
     var buttonTitle = "New meeting"
     var buttonIcon = "mic.fill"
     var note: String?
@@ -531,6 +565,10 @@ struct HomeHero: View {
                 Button(action: onNew) { Label(buttonTitle, systemImage: buttonIcon) }
                     .buttonStyle(GradientButtonStyle())
                     .padding(.horizontal, 30)
+                if let onFile {
+                    Button(action: onFile) { Label("Transcribe an audio file", systemImage: "waveform.badge.plus") }
+                        .font(.system(.callout, design: .rounded).weight(.semibold))
+                }
                 if let note {
                     Text(note).font(.footnote).foregroundStyle(Theme.dim)
                         .multilineTextAlignment(.center).padding(.horizontal, 40)

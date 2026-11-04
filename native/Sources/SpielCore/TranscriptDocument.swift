@@ -159,11 +159,17 @@ public struct TranscriptDocument: Sendable, Equatable {
         public var location: String?
         /// File name of the recording kept beside the transcript. Omitted when nil.
         public var audio: String?
+        /// Set when the transcript came from an audio file rather than the microphone:
+        /// its name, and its length (`started`/`ended` then say when it was transcribed,
+        /// so `duration_s` cannot come from them).
+        public var sourceFile: String?
+        public var fileSeconds: Double?
         public init(title: String, startedAt: Date, endedAt: Date, version: String, inputDevice: String, engine: String,
-                    location: String? = nil, audio: String? = nil) {
+                    location: String? = nil, audio: String? = nil, sourceFile: String? = nil, fileSeconds: Double? = nil) {
             self.title = title; self.startedAt = startedAt; self.endedAt = endedAt
             self.version = version; self.inputDevice = inputDevice; self.engine = engine
             self.location = location; self.audio = audio
+            self.sourceFile = sourceFile; self.fileSeconds = fileSeconds
         }
     }
 
@@ -171,7 +177,7 @@ public struct TranscriptDocument: Sendable, Equatable {
     /// the body. `started`/`ended` are ISO 8601 WITH offset — a receiver keys on
     /// them, and naive local time is ambiguous twice a year.
     public func render(frontmatter f: Frontmatter, screenshots: String = "") -> String {
-        let duration = max(0, Int(f.endedAt.timeIntervalSince(f.startedAt).rounded()))
+        let duration = max(0, Int((f.fileSeconds ?? f.endedAt.timeIntervalSince(f.startedAt)).rounded()))
         var out = "---\n"
         out += "app: Spiel\n"
         out += "spiel_version: \(Self.yaml(f.version))\n"
@@ -181,8 +187,13 @@ public struct TranscriptDocument: Sendable, Equatable {
         out += "ended: \(Self.iso8601(f.endedAt))\n"
         out += "duration_s: \(duration)\n"
         out += "words: \(wordCount)\n"
-        out += "source: microphone\n"
-        out += "input_device: \(Self.yaml(f.inputDevice))\n"
+        if let file = f.sourceFile {
+            out += "source: file\n"
+            out += "source_file: \(Self.yaml(file))\n"
+        } else {
+            out += "source: microphone\n"
+            out += "input_device: \(Self.yaml(f.inputDevice))\n"
+        }
         out += "engine: \(Self.yaml(f.engine))\n"
         if let l = f.location, !l.isEmpty { out += "location: \(Self.yaml(l))\n" }
         if let a = f.audio, !a.isEmpty { out += "audio: \(Self.yaml(a))\n" }

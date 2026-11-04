@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     enum Mode: Equatable { case dictation, listen }
     /// `paused` is Listen-only: capture stopped, session still armed.
     private enum Phase: Equatable {
-        case idle, starting(Mode), recording(Mode), paused, finishing(Mode)
+        case idle, starting(Mode), recording(Mode), paused, finishing(Mode), transcribingFile
     }
     private var phase: Phase = .idle
     /// Either mode is capturing (a paused Listen is not).
@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accessibilityPoll: Timer?
 
     // MARK: Listen state
+    /// Set while the transcript comes from an audio file instead of the mic.
+    private var listenSourceFile: String?
+    private var listenFileSeconds: Double?
+    private var fileTask: Task<Void, Never>?
     private let listenPanel = ListenPanel()
     /// The transcript. The file on disk is the truth and the panel is a view of
     /// it; both read from here and nothing else holds text.
@@ -330,6 +334,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // CTC model) so the first dictation is boosted too; every dictation
                 // start re-hands the list, which only rebuilds when the file changed.
                 if choice == .unified { await s.setGlossary(Glossary.load()) }
+                #if DEBUG
+                if let path = ProcessInfo.processInfo.environment["SPIEL_TEST_FILE"] { transcribeFile(URL(fileURLWithPath: path)) }
+                #endif
                 return
             } catch {
                 failures.append("\(choice.engineName): \(error)")
@@ -376,7 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Autosave on every paragraph break (plus the 30 s timer), so a crash
             // costs at most the paragraph in progress. After the session has
             // finished there is no timer, so a late-landing segment saves at once.
-            if doc.paragraphs.count != before || !isListening { saveListen() }
+            if doc.paragraphs.count != before || (!isListening && phase != .transcribingFile) { saveListen() }
         case .error(let e, let at, let secs):
             lastError = e
             DiagnosticLog.write("listen segment error: \(e)")
@@ -407,6 +414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let msg = "Stop Listen to dictate. It has been running \(mins) min."
             DiagnosticLog.write("dictation refused: \(msg)")
             Notifier.post(title: "Listen is on", body: msg)
+        case .transcribingFile:
+            Notifier.post(title: "Spiel is transcribing a file", body: "Dictation works again when it finishes, or cancel it in the panel.")
         case .starting, .finishing:
             DiagnosticLog.write("hotkey ignored: \(phase)")
         }
@@ -419,6 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .recording(.dictation):
             DiagnosticLog.write("listen refused: dictation in progress")
             Notifier.post(title: "Spiel is dictating", body: "Finish dictating before starting Listen.")
+        case .transcribingFile:
+            Notifier.post(title: "Spiel is transcribing a file", body: "Listen works again when it finishes, or cancel it in the panel.")
         case .starting, .finishing:
             DiagnosticLog.write("listen hotkey ignored: \(phase)")
         }
@@ -543,6 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let doc = TranscriptDocument()
             eventsGoToListen = true
             listenDoc = doc
+            listenSourceFile = nil
+            listenFileSeconds = nil
             listenURL = nil
             listenScreenshots = nil
             screenshotProblem = nil
@@ -710,6 +723,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Transcribe an audio file
+
+    /// A file goes through the Listen path: same session, same document, same panel,
+    /// same saved transcript. Only the source of the samples differs.
+    private func chooseFileToTranscribe() {
+        guard licenseAllowsStart() else { return }
+        guard phase == .idle, engineReady, session != nil else {
+            Notifier.post(title: "Spiel is busy", body: engineReady ? "Finish what it is doing, then try again." : (lastError ?? "The speech model is still loading."))
+            return
+        }
+        let open = NSOpenPanel()
+        open.title = "Transcribe Audio File"
+        open.prompt = "Transcribe"
+        open.allowedContentTypes = [.audio, .movie]
+        open.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        guard open.runModal() == .OK, let url = open.url else { return }
+        transcribeFile(url)
+    }
+
+    private func transcribeFile(_ url: URL) {
+        guard phase == .idle, engineReady, let session else { return }
+        let glossary = Glossary.load()
+        DiagnosticLog.write("file transcription start: \(url.pathExtension), vocabulary = \(glossary.count) aliases")
+        phase = .transcribingFile
+        eventsGoToListen = true
+        let started = Date()
+        listenTitle = url.deletingPathExtension().lastPathComponent
+        listenDoc = TranscriptDocument()
+        listenURL = nil
+        listenScreenshots = nil
+        screenshotProblem = nil
+        listenStartedAt = started
+        listenEndedAt = nil
+        listenSourceFile = url.lastPathComponent
+        listenFileSeconds = nil
+        consecutiveFailures = 0
+        listenSaveErrorNotified = false
+        listenPanel.beginFile(title: listenTitle, document: listenDoc!)
+        listenPanel.onTitleChanged = { [weak self] title in
+            Task { @MainActor in
+                guard let self else { return }
+                self.listenTitle = title
+                if self.listenURL != nil { self.saveListen() }
+            }
+        }
+        listenPanel.onStop = { [weak self] in Task { @MainActor in self?.fileTask?.cancel() } }
+        listenPanel.onCopy = { [weak self] in Task { @MainActor in self?.copyListen() } }
+        listenPanel.onOpen = { [weak self] in Task { @MainActor in self?.openListen() } }
+        updateStatusItem()
+        // Nothing on screen has to change for an hour-long file, so tell macOS this is
+        // real work: no App Nap, no idle sleep.
+        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                                             reason: "Transcribing an audio file")
+        fileTask = Task {
+            defer { ProcessInfo.processInfo.endActivity(activity) }
+            await session.setGlossary(glossary)
+            await session.reset()
+            do {
+                let report = try await FileTranscriber.feed(url, session: session) { done, total in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated { self.noteFileProgress(done: done, total: total) }
+                    }
+                }
+                self.finishFile(report: report, session: session)
+            } catch is CancellationError {
+                await session.reset()
+                self.cancelFile()
+            } catch {
+                await session.reset()
+                self.failFile(error)
+            }
+        }
+    }
+
+    private func noteFileProgress(done: TimeInterval, total: TimeInterval) {
+        guard phase == .transcribingFile else { return }
+        listenFileSeconds = total > 0 ? total : done
+        listenPanel.setFileProgress(done: done, total: total, words: listenDoc?.wordCount ?? 0)
+    }
+
+    private func endFile() {
+        fileTask = nil
+        eventsGoToListen = false
+        phase = .idle
+        updateStatusItem()
+    }
+
+    private func finishFile(report: DictationSession.Report, session: DictationSession) {
+        listenEndedAt = report.endedAt
+        listenFileSeconds = report.audioSeconds
+        let doc = listenDoc ?? TranscriptDocument()
+        let words = doc.wordCount
+        let length = Int(report.audioSeconds / 60)
+        let summary: String
+        if doc.isEmpty {
+            summary = "No speech found: " + FileTranscriber.fileDiagnosis(audioSeconds: report.audioSeconds, peak: report.peak,
+                                                                          segments: report.segments, errors: report.errors)
+            lastSession = "file, no speech"
+        } else {
+            saveListen()
+            let saved = listenURL != nil
+            summary = "\(length) min · \(words.formatted()) words · \(saved ? "saved" : "not saved")"
+                + (report.errors.isEmpty ? "" : " · \(report.errors.count) missed")
+            lastSession = "file, \(length) min, \(words.formatted()) words, \(saved ? "saved" : "NOT saved")"
+        }
+        DiagnosticLog.write("file transcription finished: \(lastSession!) (\(report.errors.count) errors)")
+        listenPanel.setDone(summary: summary, document: doc)
+        endFile()
+    }
+
+    /// Cancel throws the partial transcript away; it would read as a whole one later.
+    private func cancelFile() {
+        if let url = listenURL { try? FileManager.default.removeItem(at: url) }
+        listenURL = nil
+        listenDoc = nil
+        DiagnosticLog.write("file transcription cancelled")
+        listenPanel.hide()
+        endFile()
+    }
+
+    /// A file that dies partway keeps what it got, and says so.
+    private func failFile(_ error: Error) {
+        DiagnosticLog.write("file transcription failed: \(error)")
+        if let doc = listenDoc, !doc.isEmpty {
+            listenEndedAt = Date()
+            saveListen()
+            listenPanel.setDone(summary: "Stopped early: \(error)", document: doc)
+        } else {
+            listenPanel.hide()
+            Notifier.post(title: "Spiel could not read that file", body: "\(error)")
+        }
+        endFile()
+    }
+
     // MARK: - Listen
 
     private func startListening() {
@@ -815,7 +963,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TranscriptDocument.Frontmatter(
             title: listenTitle, startedAt: listenStartedAt ?? endedAt, endedAt: endedAt,
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev")",
-            inputDevice: capture.activeDeviceName ?? AudioCapture.defaultInputDeviceName(), engine: engineName
+            inputDevice: capture.activeDeviceName ?? AudioCapture.defaultInputDeviceName(), engine: engineName,
+            sourceFile: listenSourceFile, fileSeconds: listenFileSeconds
         )
     }
 
@@ -1046,6 +1195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             symbol = "waveform"   // must look different from dictation: this one records other people
         } else if phase == .paused {
             symbol = "pause.circle"
+        } else if phase == .transcribingFile {
+            symbol = "waveform"
         } else if !hotkeyStatus.isHealthy || !listenHotkeyStatus.isHealthy || !screenshotHotkeyStatus.isHealthy || !engineReady {
             symbol = "exclamationmark.triangle.fill"  // never look healthy when we aren't
         } else {
@@ -1084,6 +1235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isListening {
             _ = add("Take Screenshot" + shortcut(screenshotHotkeyStatus), #selector(menuTakeScreenshot))
         }
+        let transcribe = add("Transcribe Audio File…", #selector(menuTranscribeFile))
+        transcribe.isEnabled = phase == .idle
 
         // Problems, only when there is one.
         var problems: [NSMenuItem] = []
@@ -1294,6 +1447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func menuToggle() { toggle() }
     @objc private func menuToggleListen() { toggleListen() }
+    @objc private func menuTranscribeFile() { chooseFileToTranscribe() }
     @objc private func menuPauseListen() { pauseListening() }
     @objc private func menuResumeListen() { resumeListening() }
     @objc private func menuTakeScreenshot() { takeScreenshot() }
