@@ -9,6 +9,7 @@ struct GetLatestTranscriptIntent: AppIntent {
     static let description = IntentDescription(
         "Returns the most recent Spiel Listen transcript as Markdown text, header included.")
     static let openAppWhenRun = false
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     enum Failure: Error, CustomLocalizedStringResourceConvertible {
         case none

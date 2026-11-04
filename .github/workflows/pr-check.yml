@@ -27,6 +27,11 @@ jobs:
           if grep -nE "print\(.*(email|firstName|lastName)" .github/workflows/*.yml; then
             echo "::error::A workflow prints personal data into a public log."; exit 1
           fi
+      - name: Every Shortcuts action states who may run it
+        run: |
+          if [ "$(grep -cE ': AppIntent' native/ios/SpielMobile/Intents.swift)" != "$(grep -c 'authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication' native/ios/SpielMobile/Intents.swift)" ]; then
+            echo "::error::An AppIntent has no requiresAuthentication policy."; exit 1
+          fi
       - name: Selftest
         working-directory: native
         run: |
