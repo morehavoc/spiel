@@ -39,6 +39,28 @@ enum ScreenCapture {
         return (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
+    /// 2.10: the system's own selection crosshairs (`screencapture -i`): drag a
+    /// box, Space toggles window mode, Esc cancels. Returns nil on a cancel.
+    static func captureInteractivePNG() async throws -> Data? {
+        guard hasPermission else { throw Failure.noPermission }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spiel-shot-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let status: Int32 = try await withCheckedThrowingContinuation { cont in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-i", "-x", "-t", "png", url.path]
+            p.terminationHandler = { cont.resume(returning: $0.terminationStatus) }
+            do { try p.run() } catch { cont.resume(throwing: Failure.capture(error.localizedDescription)) }
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if status == 0 { return nil }
+            throw Failure.capture("screencapture exited \(status)")
+        }
+        let data = try Data(contentsOf: url)
+        return data.isEmpty ? nil : data
+    }
+
     static func capturePNG(display id: CGDirectDisplayID) async throws -> Data {
         guard hasPermission else { throw Failure.noPermission }
         let content: SCShareableContent

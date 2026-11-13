@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let panel = RecordingPanel()
     private let inserter = TextInserter()
     private let capture = AudioCapture()
+    private let systemAudio = SystemAudioCapture()
 
     private var session: DictationSession?
     private var engineReady = false
@@ -89,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var screenshotInFlight = false
     /// The last screenshot failure, a menu problem line until the next one works.
     private var screenshotProblem: String?
+    private var systemAudioProblem: String?
     /// Name of the engine behind `session`, for the transcript's frontmatter.
     private var engineName = "unknown"
 
@@ -499,8 +501,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openMicrophone(into session: DictationSession, mode: Mode) -> Bool {
         levelMeter = LevelMeter()
         do {
-            try capture.start(handler: { [weak self] samples in
+            let sys: SystemAudioCapture? = (mode == .listen && SystemAudioCapture.enabled) ? systemAudio : nil
+            try capture.start(handler: { [weak self] mic in
                 guard let self else { return }
+                let samples = sys.map { $0.mix(mic) } ?? mic
                 // Synchronous, ordered handoff — see AudioSink. A Task per buffer
                 // has no ordering guarantee and would shuffle mic audio.
                 session.sink.submit(samples)
@@ -519,6 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Called on the capture's private queue; hop to the main actor.
                 Task { @MainActor in self?.captureRouteChanged(outcome, session: session, mode: mode) }
             })
+            if let sys { startSystemAudio(sys) }
             return true
         } catch {
             DiagnosticLog.write("microphone failed to start: \(error)")
@@ -660,6 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finish(mode: Mode) {
         guard let session else { return }
         capture.stop()
+        systemAudio.stop()
         autosave?.invalidate(); autosave = nil
         phase = .finishing(mode)
         if mode == .dictation { panel.setStatus("Finishing…") } else { listenPanel.setFinishing() }
@@ -908,6 +914,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pauseListening() {
         guard phase == .recording(.listen) else { return }
         capture.stop()
+        systemAudio.stop()
         pausedAt = Date()
         phase = .paused
         listenPanel.setPaused(true)
@@ -1058,6 +1065,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Screenshot shortcut, panel camera button, or menu item. Only while Listen is
     /// recording or paused; the shot is the display under the pointer, saved
     /// beside the transcript and linked at the current offset.
+    /// Listen's system audio (2.10). Needs Screen Recording; without it Listen
+    /// still runs on the mic alone and the menu says why.
+    private func startSystemAudio(_ sys: SystemAudioCapture) {
+        guard ScreenCapture.hasPermission else {
+            ScreenCapture.requestPermission()
+            systemAudioProblem = "System audio needs Screen Recording for Spiel (Privacy & Security). Listening to the mic only."
+            DiagnosticLog.write("system audio: no Screen Recording permission — mic only")
+            Notifier.post(title: "Listen: mic only", body: systemAudioProblem!)
+            updateStatusItem()
+            return
+        }
+        sys.onStopped = { [weak self] why in
+            Task { @MainActor in
+                guard let self, self.isListening else { return }
+                self.systemAudioProblem = "System audio stopped: \(why). Listening to the mic only."
+                self.updateStatusItem()
+            }
+        }
+        Task { @MainActor in
+            do {
+                try await sys.start()
+                self.systemAudioProblem = nil
+            } catch {
+                self.systemAudioProblem = "System audio could not start: \(error). Listening to the mic only."
+                DiagnosticLog.write("system audio: start FAILED: \(error)")
+                Notifier.post(title: "Listen: mic only", body: "\(error)")
+            }
+            self.updateStatusItem()
+        }
+    }
+
+    @objc private func toggleSystemAudio() {
+        SystemAudioCapture.enabled.toggle()
+        DiagnosticLog.write("system audio in Listen: \(SystemAudioCapture.enabled ? "on" : "off")")
+        if isListening, phase == .recording(.listen) {
+            if SystemAudioCapture.enabled { startSystemAudio(systemAudio) } else { systemAudio.stop(); systemAudioProblem = nil }
+        }
+        updateStatusItem()
+    }
+
     private func takeScreenshot() {
         guard isListening, let session else {
             DiagnosticLog.write("screenshot ignored: Listen is not running (\(phase))")
@@ -1074,13 +1121,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pressedAt = Date()
         let pausedFor = pausedAt.map { pressedAt.timeIntervalSince($0) } ?? 0
         let correctionAtPress = listenDoc?.pauseCorrection ?? 0
-        let display = ScreenCapture.displayUnderPointer()
         Task { @MainActor in
             defer { self.screenshotInFlight = false }
             let at = await session.audioSeconds
             do {
-                guard let display else { throw ScreenCapture.Failure.noDisplay }
-                let png = try await ScreenCapture.capturePNG(display: display)
+                // 2.10: drag a box (macOS crosshairs; Space for a window, Esc cancels).
+                guard let png = try await ScreenCapture.captureInteractivePNG() else {
+                    DiagnosticLog.write("screenshot cancelled")
+                    return
+                }
                 guard var doc = self.listenDoc else { return }
                 // A pause that closed while the capture ran is now in the document's
                 // correction; do not count it twice.
@@ -1237,6 +1286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let transcribe = add("Transcribe Audio File…", #selector(menuTranscribeFile))
         transcribe.isEnabled = phase == .idle
+        add("Listen Includes System Audio", #selector(toggleSystemAudio)).state = SystemAudioCapture.enabled ? .on : .off
 
         // Problems, only when there is one.
         var problems: [NSMenuItem] = []
@@ -1257,6 +1307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let item = NSMenuItem(title: "⚠︎ \(desc) isn't working: \(reason)", action: #selector(retryScreenshotHotkey), keyEquivalent: "")
             item.target = self
             problems.append(item)
+        }
+        if let systemAudioProblem, isListening {
+            problems.append(NSMenuItem(title: "⚠︎ " + systemAudioProblem, action: nil, keyEquivalent: ""))
         }
         if let screenshotProblem {
             problems.append(NSMenuItem(title: "⚠︎ Screenshot failed: \(screenshotProblem)", action: nil, keyEquivalent: ""))
