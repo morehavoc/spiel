@@ -36,7 +36,7 @@ the newest transcript as text, however long the meeting was. Nothing else needs 
 
 - Mac (Spiel 2.8 or later): Settings → General → **When Listen stops → Run Shortcut**, then
   pick it from the list. Choose **None** to turn it off.
-- iPhone (Spiel Listen 0.3 or later): ⋯ menu → **Shortcut When Listen Stops**, then type the
+- iPhone (Spiel Listen 0.3 or later): gear button on the home screen (⋯ menu before 0.5) → **Shortcut When Listen Stops**, then type the
   Shortcut's exact name, since iOS doesn't let apps list your Shortcuts. Tap **None** to turn
   it off.
 

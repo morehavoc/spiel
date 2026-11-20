@@ -8,7 +8,7 @@ struct SpielMobileApp: App {
     @StateObject private var model = ListenModel()
     var body: some Scene {
         WindowGroup {
-            NavigationStack { LiveView() }
+            NavigationStack { HomeView() }
                 .environmentObject(model)
                 .preferredColorScheme(.dark)
                 .tint(Theme.cyan)
@@ -217,111 +217,73 @@ struct StampLabel: LabelStyle {
 
 // MARK: - Live
 
-struct LiveView: View {
+// MARK: - Home (0.5): where the app opens and always comes back to
+
+struct HomeView: View {
     @EnvironmentObject var model: ListenModel
+    @State private var items: [SavedTranscript] = []
     @State private var query = ""
-    @State private var follow = true
-    @State private var jumpTo: Int?
-    @State private var toast: String?
     @State private var showNew = false
     @State private var pickingFile = false
     @State private var askDownload = false
+    @State private var askedDownload = false
     @State private var editingShortcut = false
     @State private var shortcutName = ""
-    @State private var askedDownload = false
-    @State private var renaming = false
-    @State private var newTitle = ""
+    @State private var toast: String?
+    @State private var sharing: SavedTranscript?
     @AppStorage(TextSize.key) private var size = TextSize.standard
 
     var body: some View {
-        VStack(spacing: 0) {
-            content
-            if model.startedAt != nil { controls }
-        }
-        .themed()
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .modifier(SearchIf(enabled: model.startedAt != nil, query: $query))
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                NavigationLink { LibraryView() } label: { Image(systemName: "books.vertical") }
-                    .accessibilityLabel("Transcripts")
-            }
-            ToolbarItem(placement: .principal) {
-                if model.startedAt != nil {
-                    VStack(spacing: 1) {
-                        Text(model.title).font(.system(.headline, design: .rounded)).lineLimit(1)
-                        HStack(spacing: 4) {
-                            if let place = model.location {
-                                Image(systemName: "mappin.and.ellipse"); Text(place).lineLimit(1)
-                            } else if let s = model.startedAt {
-                                Text(s, format: .dateTime.weekday().month().day().hour().minute())
-                            }
-                            if model.audioURL != nil { Image(systemName: "waveform") }
+        content
+            .themed()
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        TextSizeItems(size: $size)
+                        Divider()
+                        Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
+                            Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
                         }
-                        .font(.caption2).foregroundStyle(Theme.dim)
-                    }
-                    .onTapGesture { newTitle = model.title; renaming = true }
+                    } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("Settings")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if model.startedAt != nil {
-                        ExportItems(plain: model.doc.body(plain: true), timed: model.doc.body(),
-                                    file: model.fileURL, audio: model.isActive ? nil : model.audioURL, toast: $toast)
-                        Divider()
-                        Button { newTitle = model.title; renaming = true } label: { Label("Rename", systemImage: "pencil") }
-                    }
-                    TextSizeItems(size: $size)
-                    Divider()
-                    Button { pickingFile = true } label: { Label("Transcribe Audio File", systemImage: "waveform.badge.plus") }
-                        .disabled(model.phase != .ready)
-                    Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
-                        Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
-                    }
-                } label: { Image(systemName: "ellipsis.circle") }
+            .sheet(isPresented: $showNew) { NewMeetingSheet().environmentObject(model) }
+            .fullScreenCover(isPresented: Binding(get: { model.inSession }, set: { _ in })) {
+                NavigationStack { MeetingView() }
+                    .environmentObject(model)
+                    .preferredColorScheme(.dark)
+                    .tint(Theme.cyan)
             }
-        }
-        .sheet(isPresented: $showNew) { NewMeetingSheet().environmentObject(model) }
-        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.audio, .movie]) { result in
-            if case .success(let url) = result { model.transcribeFile(url) }
-        }
-        .alert("Download the speech model?", isPresented: $askDownload) {
-            Button("Download Now") { model.downloadModel() }
-            Button("Later", role: .cancel) {}
-        } message: {
-            Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 500 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
-        }
-        .onAppear { if model.phase == .needsDownload && !askedDownload { askedDownload = true; askDownload = true } }
-        .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
-            TextField("Shortcut name", text: $shortcutName)
-            Button("Save") { ListenModel.stopShortcut = shortcutName; toast = ListenModel.stopShortcut == nil ? "No Shortcut" : "Saved" }
-            Button("None") { ListenModel.stopShortcut = nil; toast = "No Shortcut" }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Type the exact name of a Shortcut. Every time you stop, Spiel opens Shortcuts, runs it, then comes back. Start the Shortcut with the Get Latest Spiel Transcript action to read the transcript.")
-        }
-        .alert("Rename", isPresented: $renaming) {
-            TextField("Title", text: $newTitle)
-            Button("Save") { if !newTitle.trimmingCharacters(in: .whitespaces).isEmpty { model.title = newTitle } }
-            Button("Cancel", role: .cancel) {}
-        }
-        .overlay(alignment: .top) { Toast(text: $toast) }
-        .onChange(of: jumpTo) { if jumpTo != nil { query = "" } }
-        #if DEBUG
-        .onAppear {
-            let env = ProcessInfo.processInfo.environment
-            if env["SPIEL_SHOW_NEW"] == "1" { showNew = true }
-            if env["SPIEL_OPEN_LATEST"] == "1" { openLatest = SavedTranscript.all().first }
-            if let q = env["SPIEL_QUERY"] { DispatchQueue.main.asyncAfter(deadline: .now() + 2) { query = q } }
-        }
-        .navigationDestination(item: $openLatest) { SavedTranscriptView(item: $0) }
-        #endif
+            .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.audio, .movie]) { result in
+                if case .success(let url) = result { model.transcribeFile(url) }
+            }
+            .alert("Download the speech model?", isPresented: $askDownload) {
+                Button("Download Now") { model.downloadModel() }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 500 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
+            }
+            .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
+                TextField("Shortcut name", text: $shortcutName)
+                Button("Save") { ListenModel.stopShortcut = shortcutName; toast = ListenModel.stopShortcut == nil ? "No Shortcut" : "Saved" }
+                Button("None") { ListenModel.stopShortcut = nil; toast = "No Shortcut" }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Type the exact name of a Shortcut. Every time you stop, Spiel opens Shortcuts, runs it, then comes back. Start the Shortcut with the Get Latest Spiel Transcript action to read the transcript.")
+            }
+            .overlay(alignment: .top) { Toast(text: $toast) }
+            .onAppear {
+                items = SavedTranscript.all()
+                if model.phase == .needsDownload && !askedDownload { askedDownload = true; askDownload = true }
+            }
+            .onChange(of: model.savedCount) { items = SavedTranscript.all() }
+            #if DEBUG
+            .onAppear { if ProcessInfo.processInfo.environment["SPIEL_SHOW_NEW"] == "1" { showNew = true } }
+            #endif
     }
-
-    #if DEBUG
-    @State private var openLatest: SavedTranscript?
-    #endif
 
     @ViewBuilder private var content: some View {
         switch model.phase {
@@ -347,21 +309,195 @@ struct LiveView: View {
             }
             .padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
-            if model.startedAt == nil {
-                HomeHero(onNew: { showNew = true }, onFile: { pickingFile = true })
-            } else if model.doc.isEmpty {
-                VStack(spacing: 18) {
-                    WaveBars(level: model.level, live: model.phase == .recording, barWidth: 8, height: 70)
-                    Text(model.phase == .transcribing ? "Transcribing…"
-                         : model.isActive ? "Listening. Words appear a moment after each pause." : "Nothing was heard.")
-                        .font(.system(.callout, design: .rounded)).foregroundStyle(Theme.dim)
-                        .multilineTextAlignment(.center).padding(.horizontal, 40)
+            home
+        }
+    }
+
+    private var home: some View {
+        List {
+            Section {
+                VStack(spacing: 16) {
+                    Text("Spiel").font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(Theme.ink)
+                    Button { showNew = true } label: { Label("Record a meeting", systemImage: "mic.fill") }
+                        .buttonStyle(GradientButtonStyle())
+                        .disabled(model.phase != .ready)
+                    Button { pickingFile = true } label: { Label("Transcribe Audio File", systemImage: "waveform.badge.plus") }
+                        .font(.system(.callout, design: .rounded).weight(.semibold))
+                        .disabled(model.phase != .ready || !model.engineReady)
+                    status
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                TranscriptList(lines: model.doc.lines, query: query, follow: $follow,
-                               revision: model.revision, jumpTo: $jumpTo)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
+            Section {
+                ForEach(filtered) { item in
+                    NavigationLink { SavedTranscriptView(item: item) } label: { TranscriptCard(item: item, chevron: false) }
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { delete(item) } label: { Label("Delete", systemImage: "trash") }
+                            ShareLink(item: item.url) { Label("Share", systemImage: "square.and.arrow.up") }.tint(Theme.violet)
+                        }
+                }
+            } header: {
+                if !items.isEmpty {
+                    Text("TRANSCRIPTS").font(.caption.weight(.semibold)).foregroundStyle(Theme.dim).tracking(1.2)
+                }
+            }
+            if items.isEmpty {
+                Text("Your transcripts will show up here.").font(.footnote).foregroundStyle(Theme.dim)
+                    .frame(maxWidth: .infinity).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .searchable(text: $query, prompt: "Search all transcripts")
+    }
+
+    @ViewBuilder private var status: some View {
+        if let note = model.homeNote {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: note.hasPrefix("Saved") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundStyle(note.hasPrefix("Saved") ? Theme.cyan : Theme.record)
+                Text(note).font(.footnote).foregroundStyle(Theme.ink).multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                Button { model.homeNote = nil } label: { Image(systemName: "xmark").font(.caption) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.dim).accessibilityLabel("Dismiss")
+            }
+            .card(padding: 12, radius: 12)
+        }
+        if let err = model.engineError {
+            VStack(spacing: 8) {
+                Text(err).font(.footnote).foregroundStyle(Theme.record).multilineTextAlignment(.center)
+                Button { model.downloadModel() } label: { Label("Try again", systemImage: "arrow.clockwise") }.font(.footnote)
+            }
+        } else if let p = model.preparing {
+            PreparingLine(text: p + " You can start recording now.")
+        }
+    }
+
+    private var filtered: [SavedTranscript] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return items }
+        return items.filter { item in
+            item.title.localizedCaseInsensitiveContains(q)
+                || (item.location?.localizedCaseInsensitiveContains(q) ?? false)
+                || ((try? String(contentsOf: item.url, encoding: .utf8))?.localizedCaseInsensitiveContains(q) ?? false)
+        }
+    }
+
+    private func delete(_ item: SavedTranscript) {
+        try? FileManager.default.removeItem(at: item.url)
+        if let a = item.audio { try? FileManager.default.removeItem(at: a) }
+        items = SavedTranscript.all()
+    }
+}
+
+/// A small spinner and one line: the model is loading in the background.
+struct PreparingLine: View {
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ProgressView().tint(Theme.cyan)
+            Text(text).font(.footnote).foregroundStyle(Theme.dim).multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+        }
+        .card(padding: 12, radius: 12)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Meeting / file screen (shown over Home while one is open)
+
+struct MeetingView: View {
+    @EnvironmentObject var model: ListenModel
+    @State private var query = ""
+    @State private var follow = true
+    @State private var jumpTo: Int?
+    @State private var toast: String?
+    @State private var renaming = false
+    @State private var newTitle = ""
+    @AppStorage(TextSize.key) private var size = TextSize.standard
+
+    var body: some View {
+        VStack(spacing: 0) {
+            banner
+            content
+            controls
+        }
+        .themed()
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .modifier(SearchIf(enabled: !model.doc.isEmpty, query: $query))
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    Text(model.title).font(.system(.headline, design: .rounded)).lineLimit(1)
+                    HStack(spacing: 4) {
+                        if let place = model.location {
+                            Image(systemName: "mappin.and.ellipse"); Text(place).lineLimit(1)
+                        } else if let s = model.startedAt {
+                            Text(s, format: .dateTime.weekday().month().day().hour().minute())
+                        }
+                        if model.audioURL != nil { Image(systemName: "waveform") }
+                    }
+                    .font(.caption2).foregroundStyle(Theme.dim)
+                }
+                .onTapGesture { newTitle = model.title; renaming = true }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    ExportItems(plain: model.doc.body(plain: true), timed: model.doc.body(),
+                                file: model.fileURL, audio: nil, toast: $toast)
+                    Divider()
+                    Button { newTitle = model.title; renaming = true } label: { Label("Rename", systemImage: "pencil") }
+                    TextSizeItems(size: $size)
+                } label: { Image(systemName: "ellipsis.circle") }
+            }
+        }
+        .alert("Rename", isPresented: $renaming) {
+            TextField("Title", text: $newTitle)
+            Button("Save") { if !newTitle.trimmingCharacters(in: .whitespaces).isEmpty { model.title = newTitle } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .overlay(alignment: .top) { Toast(text: $toast) }
+        .onChange(of: jumpTo) { if jumpTo != nil { query = "" } }
+    }
+
+    /// 0.5: recording before the model is ready is safe; say so, plainly, until it has caught up.
+    @ViewBuilder private var banner: some View {
+        if model.phase != .transcribing {
+            if !model.engineReady {
+                PreparingLine(text: model.engineError != nil
+                              ? "The speech model did not load. Recording continues; the transcript can't be made yet."
+                              : model.isActive
+                                ? "Preparing the speech model. Keep going: everything is being recorded, and the words will catch up in a moment."
+                                : "Stopped. Writing up the recording as soon as the speech model is ready; this screen closes when it's saved.")
+                    .padding(.horizontal, 16).padding(.top, 8)
+            } else if model.catchingUp {
+                PreparingLine(text: "Catching up on what was said while the model loaded…")
+                    .padding(.horizontal, 16).padding(.top, 8)
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if model.doc.isEmpty {
+            VStack(spacing: 18) {
+                WaveBars(level: model.level, live: model.phase == .recording, barWidth: 8, height: 70)
+                Text(model.phase == .transcribing ? "Transcribing…"
+                     : model.isActive ? (model.engineReady ? "Listening. Words appear a moment after each pause." : "Recording.")
+                     : "Finishing…")
+                    .font(.system(.callout, design: .rounded)).foregroundStyle(Theme.dim)
+                    .multilineTextAlignment(.center).padding(.horizontal, 40)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TranscriptList(lines: model.doc.lines, query: query, follow: $follow,
+                           revision: model.revision, jumpTo: $jumpTo)
         }
     }
 
@@ -408,12 +544,7 @@ struct LiveView: View {
                 if model.isActive {
                     RecordButton(recording: model.phase == .recording) { model.stop() }
                 } else {
-                    Button { showNew = true } label: {
-                        Image(systemName: "plus").font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
-                            .frame(width: 70, height: 70).background(Theme.wave, in: Circle())
-                            .shadow(color: Theme.violet.opacity(0.4), radius: 12, y: 5)
-                    }
-                    .accessibilityLabel("New meeting")
+                    ProgressView().frame(width: 70, height: 70)
                 }
                 Spacer()
                 HStack(spacing: 14) {
@@ -426,7 +557,7 @@ struct LiveView: View {
                         }
                         .accessibilityLabel(model.phase == .paused ? "Resume" : "Pause")
                     } else {
-                        Text("Saved").font(.caption.weight(.semibold)).foregroundStyle(Theme.cyan)
+                        Text(model.finishing ? "Catching up" : "Saving").font(.caption.weight(.semibold)).foregroundStyle(Theme.cyan)
                     }
                 }
                 .frame(width: 96, alignment: .trailing)
@@ -828,6 +959,8 @@ struct SavedTranscript: Identifiable, Hashable {
 
 struct TranscriptCard: View {
     let item: SavedTranscript
+    /// Off inside a List row, which draws its own disclosure chevron.
+    var chevron = true
     var body: some View {
         HStack(spacing: 14) {
             RoundedRectangle(cornerRadius: 3).fill(Theme.wave).frame(width: 4)
@@ -845,51 +978,9 @@ struct TranscriptCard: View {
             }
             Spacer()
             if item.audio != nil { Image(systemName: "waveform").foregroundStyle(Theme.cyan) }
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.dim)
+            if chevron { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.dim) }
         }
         .card(padding: 14, radius: 16)
-    }
-}
-
-struct LibraryView: View {
-    @State private var items: [SavedTranscript] = []
-    @State private var query = ""
-
-    var body: some View {
-        List {
-            ForEach(filtered) { item in
-                NavigationLink { SavedTranscriptView(item: item) } label: { TranscriptCard(item: item) }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
-            }
-            .onDelete { idx in
-                for i in idx {
-                    try? FileManager.default.removeItem(at: filtered[i].url)
-                    if let a = filtered[i].audio { try? FileManager.default.removeItem(at: a) }
-                }
-                items = SavedTranscript.all()
-            }
-        }
-        .listStyle(.plain)
-        .overlay {
-            if items.isEmpty { Text("No transcripts yet.").foregroundStyle(Theme.dim) }
-        }
-        .themed()
-        .searchable(text: $query, prompt: "Search all transcripts")
-        .navigationTitle("Transcripts")
-        .onAppear { items = SavedTranscript.all() }
-    }
-
-    /// Searches titles, places AND full text, so "budget" finds the meeting.
-    private var filtered: [SavedTranscript] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return items }
-        return items.filter { item in
-            item.title.localizedCaseInsensitiveContains(q)
-                || (item.location?.localizedCaseInsensitiveContains(q) ?? false)
-                || ((try? String(contentsOf: item.url, encoding: .utf8))?.localizedCaseInsensitiveContains(q) ?? false)
-        }
     }
 }
 

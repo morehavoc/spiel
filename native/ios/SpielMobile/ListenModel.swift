@@ -42,6 +42,20 @@ final class ListenModel: ObservableObject {
     @Published private(set) var fileProgress: Double?
 
     private var session: DictationSession?
+    /// 0.5: the model loads in the background; a meeting can start before it is ready.
+    /// nil = ready (or not downloaded yet); otherwise the line Home and the meeting show.
+    @Published private(set) var preparing: String?
+    /// The model load failed after the download (Home offers Try again).
+    @Published private(set) var engineError: String?
+    /// True from the moment the model is ready until the audio queued before it is replayed.
+    @Published private(set) var catchingUp = false
+    /// Stop was pressed before the model was ready; the meeting finishes once it catches up.
+    @Published private(set) var finishing = false
+    /// Bumped each time a meeting or file is saved and closed, so Home reloads its list.
+    @Published private(set) var savedCount = 0
+    /// One-line note for Home after a meeting closes ("Saved", or what went wrong).
+    @Published var homeNote: String?
+    private let feed = PendingFeed()
     private let capture = AudioCapture()
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
@@ -58,11 +72,25 @@ final class ListenModel: ObservableObject {
     private var fileTask: Task<Void, Never>?
 
     var isActive: Bool { phase == .recording || phase == .paused }
+    var engineReady: Bool { session != nil }
+    /// A meeting or file is open: the meeting screen is shown over Home.
+    var inSession: Bool { startedAt != nil }
 
     init() {
         observeAudioSession()
         if ParakeetTranscriber.isDownloaded(version: .v3) {
+            phase = .ready
+            preparing = Self.preparingText()
             Task { await loadEngine() }
+            #if DEBUG
+            let env = ProcessInfo.processInfo.environment
+            if env["SPIEL_START_EARLY"] == "1" {
+                start(title: "Early start test", location: nil, keepAudio: false)
+                if let secs = Double(env["SPIEL_AUTOSTOP"] ?? "") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + secs) { MainActor.assumeIsolated { self.stop() } }
+                }
+            }
+            #endif
         } else {
             phase = .needsDownload
             #if DEBUG
@@ -73,6 +101,12 @@ final class ListenModel: ObservableObject {
 
     /// Starts (or retries) loading the speech model, downloading it if needed.
     func downloadModel() {
+        if engineError != nil, session == nil {
+            engineError = nil
+            preparing = Self.preparingText()
+            Task { await loadEngine() }
+            return
+        }
         switch phase {
         case .needsDownload, .failed: break
         default: return
@@ -81,9 +115,19 @@ final class ListenModel: ObservableObject {
         Task { await loadEngine() }
     }
 
+    private static let lastLoadedBuildKey = "ModelLoadedForBuild"
+    private static var currentBuild: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?" }
+    /// After an update iOS re-prepares the model for the Neural Engine, which takes minutes, not seconds.
+    private static func preparingText() -> String {
+        UserDefaults.standard.string(forKey: lastLoadedBuildKey) == currentBuild
+            ? "Preparing the speech model…"
+            : "Getting ready after the update. This one can take a few minutes."
+    }
+
     // MARK: - Engine
 
     private func loadEngine() async {
+        let loadStarted = Date()
         let transcriber = ParakeetTranscriber(version: .v3) { p in
             let text: String
             var step = 0
@@ -92,20 +136,35 @@ final class ListenModel: ObservableObject {
             case .downloading:
                 text = "Downloading the speech model (about 500 MB, once)"; step = 1
             case .compiling:
-                text = "Preparing the speech model for the Neural Engine. This happens once and can take a few minutes."; step = 2
+                text = "Preparing the speech model for the Neural Engine. The first time can take a few minutes."; step = 2
             }
             let fraction = p.downloadFraction
             DispatchQueue.main.async { MainActor.assumeIsolated { self.noteLoading(text, step: step, fraction: fraction) } }
         }
         let s = DictationSession(transcriber: transcriber)
         do {
+            #if DEBUG
+            // Simulates the slow Neural Engine load the simulator never has.
+            if let d = Double(ProcessInfo.processInfo.environment["SPIEL_SLOW_LOAD"] ?? "") {
+                try await Task.sleep(for: .seconds(d))
+            }
+            #endif
             try await s.prepare()
         } catch {
             loadStep = nil
-            phase = .failed("The speech model did not load: \(error)")
-            DiagnosticLog.write("engine load failed: \(error)")
+            DiagnosticLog.write("engine load failed after \(Int(Date().timeIntervalSince(loadStarted))) s: \(error)")
+            preparing = nil
+            if case .loading = phase {
+                phase = .failed("The speech model did not load: \(error)")
+            } else {
+                engineError = "The speech model did not load: \(error)"
+                if inSession { lastError = "The speech model did not load, so this meeting has no transcript yet." + (audioURL != nil ? " The audio is being kept." : "") }
+                if finishing { closeAfterStop(nil) }
+            }
             return
         }
+        DiagnosticLog.write("engine loaded in \(String(format: "%.1f", Date().timeIntervalSince(loadStarted))) s (build \(Self.currentBuild))")
+        UserDefaults.standard.set(Self.currentBuild, forKey: Self.lastLoadedBuildKey)
         // DispatchQueue.main.async is FIFO; a Task per event is not, and events
         // landing out of order would reorder the transcript.
         await s.setEventHandler { [weak self] event in
@@ -113,8 +172,11 @@ final class ListenModel: ObservableObject {
         }
         session = s
         loadStep = nil
+        preparing = nil
         Self.excludeModelsFromBackup()
-        phase = .ready
+        if case .loading = phase { phase = .ready }
+        if case .failed = phase { phase = .ready }
+        if inSession && phase != .transcribing { await catchUp(s) }
         #if DEBUG
         if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
             if let path = ProcessInfo.processInfo.environment["SPIEL_AUTOFILE"] {
@@ -140,6 +202,13 @@ final class ListenModel: ObservableObject {
     }
 
     private func noteLoading(_ text: String, step: Int = 0, fraction: Double? = nil) {
+        // Downloaded: the rest is the Neural Engine load, which no longer blocks the screen.
+        if step == 2, case .loading = phase {
+            phase = .ready
+            loadStep = nil
+            preparing = "Preparing the speech model for the first time. This can take a few minutes."
+            return
+        }
         guard case .loading = phase else { return }
         phase = .loading(text)
         if step == 0 { return }
@@ -165,14 +234,22 @@ final class ListenModel: ObservableObject {
     }
 
     func start(title: String, location: String?, keepAudio: Bool) {
-        guard phase == .ready, let session else { return }
+        guard phase == .ready, !inSession else { return }
         Task {
             guard await AVAudioApplication.requestRecordPermission() else {
-                lastError = "Microphone access is off. Settings → Spiel Listen → Microphone."
+                homeNote = "Microphone access is off. Settings → Spiel Listen → Microphone."
                 return
             }
-            await session.setGlossary(Glossary.load())
-            await session.reset()
+            if let session {
+                await session.setGlossary(Glossary.load())
+                await session.reset()
+                feed.reset(attachedTo: session.sink)
+            } else {
+                feed.reset(attachedTo: nil)
+                DiagnosticLog.write("meeting started before the model was ready; audio is queued")
+            }
+            finishing = false
+            catchingUp = false
             doc = TranscriptDocument()
             revision += 1
             let started = Date()
@@ -200,7 +277,7 @@ final class ListenModel: ObservableObject {
             pausedTotal = 0
             consecutiveFailures = 0
             lastError = nil
-            guard openMic(into: session) else { return }
+            guard openMic() else { startedAt = nil; homeNote = lastError; return }
             phase = .recording
             UIApplication.shared.isIdleTimerDisabled = true
             autosave = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
@@ -219,31 +296,94 @@ final class ListenModel: ObservableObject {
     }
 
     func resume() {
-        guard phase == .paused, let session else { return }
+        guard phase == .paused else { return }
         closePause()
-        if openMic(into: session) { phase = .recording }
+        if openMic() { phase = .recording }
     }
 
     func stop() {
-        guard isActive, let session else { return }
+        guard isActive else { return }
         if phase == .paused { closePause() }
         capture.stop()
         phase = .ready
         autosave?.invalidate(); autosave = nil
-        UIApplication.shared.isIdleTimerDisabled = false
         meter.reset(); level = 0
         let rec = recorder
         recorder = nil
         Task {
             await Task.detached { rec?.finish() }.value
             if let e = rec?.error { lastError = "The recording stopped early: \(e)" }
-            let report = await session.finishWithReport()
-            endedAt = report.endedAt
-            if !report.errors.isEmpty { DiagnosticLog.write("listen ended with errors: \(report.diagnosis)") }
-            save()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            runStopShortcut()
+            if let session, feed.isAttached {
+                await finishMeeting(session)
+            } else {
+                // The model is still loading: keep the screen up until it catches up.
+                finishing = true
+                endedAt = Date()
+                save()
+                if engineError != nil { closeAfterStop(nil) }
+            }
         }
+    }
+
+    private func finishMeeting(_ session: DictationSession) async {
+        UIApplication.shared.isIdleTimerDisabled = false
+        let stoppedAt = endedAt  // set when Stop came before the model was ready
+        let report = await session.finishWithReport()
+        endedAt = stoppedAt ?? report.endedAt
+        if !report.errors.isEmpty { DiagnosticLog.write("listen ended with errors: \(report.diagnosis)") }
+        save()
+        runStopShortcut()
+        closeAfterStop(nil)
+    }
+
+    /// Replays audio queued before the model was ready, then switches the mic to live.
+    private func catchUp(_ session: DictationSession) async {
+        catchingUp = true
+        await session.setGlossary(Glossary.load())
+        await session.reset()
+        let started = Date()
+        var replayed = 0
+        while true {
+            let items = feed.drainOrAttach(session.sink)
+            if items.isEmpty { break }
+            for item in items {
+                switch item {
+                case .samples(let s):
+                    session.sink.submit(s); replayed += s.count
+                case .pause(let span):
+                    let at = await session.audioSeconds
+                    await session.notePause(seconds: span)
+                    doc.notePause(seconds: span, atOffset: at)
+                    revision += 1
+                }
+            }
+            await Task.yield()
+        }
+        DiagnosticLog.write("caught up: replayed \(replayed / 16_000) s of queued audio in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+        if feed.overflowed { lastError = "The speech model took more than 15 minutes to load, so part of this meeting has no transcript." }
+        if finishing {
+            finishing = false
+            await finishMeeting(session)
+        }
+        catchingUp = false
+    }
+
+    /// Closes the meeting or file screen and returns to Home.
+    private func closeAfterStop(_ note: String?) {
+        UIApplication.shared.isIdleTimerDisabled = false
+        finishing = false
+        let saved = fileURL != nil && !doc.isEmpty
+        homeNote = lastError ?? note ?? (saved ? "Saved: \(title)" : nil)
+        lastError = nil
+        startedAt = nil
+        doc = TranscriptDocument()
+        fileURL = nil
+        audioURL = nil
+        location = nil
+        endedAt = nil
+        sourceFile = nil
+        savedCount += 1
     }
 
     // MARK: - Transcribe an audio file
@@ -252,7 +392,7 @@ final class ListenModel: ObservableObject {
     /// The picked file is copied in first: Files can hand over an iCloud file that is
     /// not on the phone yet, and the coordinated copy is what fetches it.
     func transcribeFile(_ picked: URL) {
-        guard phase == .ready, let session else { return }
+        guard phase == .ready, !inSession, let session else { return }
         phase = .transcribing
         fileProgress = nil
         doc = TranscriptDocument()
@@ -317,6 +457,7 @@ final class ListenModel: ObservableObject {
             fileProgress = nil
             fileTask = nil
             phase = .ready
+            if startedAt != nil { closeAfterStop(nil) } else { homeNote = lastError; lastError = nil }
         }
     }
 
@@ -398,8 +539,8 @@ final class ListenModel: ObservableObject {
         return URL(string: "shortcuts://x-callback-url/run-shortcut?" + q)
     }
 
-    private func openMic(into session: DictationSession) -> Bool {
-        let sink = session.sink
+    private func openMic() -> Bool {
+        let sink = feed
         let rec = recorder
         let meter = self.meter
         do {
@@ -420,10 +561,11 @@ final class ListenModel: ObservableObject {
     }
 
     private func closePause() {
-        guard let session, let pausedAt else { return }
+        guard let pausedAt else { return }
         let span = Date().timeIntervalSince(pausedAt)
         self.pausedAt = nil
         pausedTotal += span
+        guard let session, feed.isAttached else { feed.notePause(span); return }
         Task {
             let at = await session.audioSeconds
             await session.notePause(seconds: span)
@@ -512,12 +654,13 @@ final class ListenModel: ObservableObject {
         observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { n in
             let reason = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             MainActor.assumeIsolated {
-                guard self.phase == .recording, let session = self.session,
+                guard self.phase == .recording,
                       reason == AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue
                         || reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
                 self.capture.stop()
-                guard self.openMic(into: session) else { return }
+                guard self.openMic() else { return }
                 let name = AudioCapture.currentInputName
+                guard let session = self.session, self.feed.isAttached else { return }
                 Task {
                     let at = await session.audioSeconds
                     await session.noteCaptureRestart()
