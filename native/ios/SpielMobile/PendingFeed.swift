@@ -22,8 +22,8 @@ final class PendingFeed: @unchecked Sendable {
     /// Seconds of audio waiting for the model.
     var waitingSeconds: Double { lock.lock(); defer { lock.unlock() }; return Double(queued) / 16_000 }
 
+    // TEMPORARY (0.5.3): samples handed straight to the session, for MeetingHealth.
     private var passed = 0
-    /// Samples handed straight to the session since the last call (health log).
     func takePassedSamples() -> Int { lock.lock(); defer { lock.unlock() }; let n = passed; passed = 0; return n }
 
     func submit(_ s: [Float]) {

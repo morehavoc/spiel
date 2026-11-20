@@ -56,10 +56,7 @@ final class ListenModel: ObservableObject {
     /// One-line note for Home after a meeting closes ("Saved", or what went wrong).
     @Published var homeNote: String?
     private let feed = PendingFeed()
-    /// 0.5.2: restarts the mic when iOS silently stops it, and writes a health line every 30 s.
-    private var watchdog: Timer?
-    private var micRestarts: [Date] = []
-    private var lastHealth = Date()
+    private let health = MeetingHealth()  // TEMPORARY (0.5.3)
     private let capture = AudioCapture()
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
@@ -81,13 +78,10 @@ final class ListenModel: ObservableObject {
     var inSession: Bool { startedAt != nil }
 
     init() {
-        // The iPhone log holds no transcript text (only events and counts), so it is
-        // always on; the gear menu's Send Diagnostics shares it.
+        // The iPhone log holds events and counts, never transcript text, so it is
+        // always on; Send Diagnostics (gear menu on Home) shares it.
         DiagnosticLog.setEnabled(true, persist: false)
-        DiagnosticLog.write("app launched, build \(Self.currentBuild), model on phone: \(ParakeetTranscriber.isDownloaded(version: .v3))")
-        capture.onConfigurationChange = { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.restartMic("the audio configuration changed") } }
-        }
+        DiagnosticLog.write("app launched: build \(Self.currentBuild), speech model on the phone: \(ParakeetTranscriber.isDownloaded(version: .v3))")
         observeAudioSession()
         if ParakeetTranscriber.isDownloaded(version: .v3) {
             phase = .ready
@@ -290,14 +284,9 @@ final class ListenModel: ObservableObject {
             lastError = nil
             guard openMic() else { startedAt = nil; homeNote = lastError; return }
             phase = .recording
-            DiagnosticLog.write("meeting started, model ready: \(session != nil), input: \(AudioCapture.currentInputName), keep audio: \(recorder != nil)")
-            micRestarts = []
-            lastHealth = Date()
-            _ = capture.takeBufferCount(); _ = feed.takePassedSamples()
-            watchdog?.invalidate()
-            watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-                MainActor.assumeIsolated { self.watchdogTick() }
-            }
+            DiagnosticLog.write("meeting started: model ready \(session != nil), input \(AudioCapture.currentInputName), keep audio \(recorder != nil)")
+            _ = capture.takeBufferStats(); _ = feed.takePassedSamples()
+            health.start { [weak self] in self?.logHealth() }
             UIApplication.shared.isIdleTimerDisabled = true
             autosave = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
                 MainActor.assumeIsolated { self.save() }
@@ -322,8 +311,9 @@ final class ListenModel: ObservableObject {
 
     func stop() {
         guard isActive else { return }
-        DiagnosticLog.write("stop pressed: model ready \(session != nil), audio flowing to it \(feed.isAttached), \(doc.wordCount) words on screen")
-        watchdog?.invalidate(); watchdog = nil
+        DiagnosticLog.write("stop pressed: model ready \(session != nil), audio going to the model \(feed.isAttached), \(doc.wordCount) words in the document")
+        logHealth()
+        health.stop()
         if phase == .paused { closePause() }
         capture.stop()
         phase = .ready
@@ -349,20 +339,16 @@ final class ListenModel: ObservableObject {
 
     private func finishMeeting(_ session: DictationSession) async {
         UIApplication.shared.isIdleTimerDisabled = false
-        // Leaving the app while it saves must not suspend the save half-way.
-        let bg = UIApplication.shared.beginBackgroundTask(withName: "Finish meeting") {
-            DiagnosticLog.write("finish: iOS ended the background time before the save finished")
-        }
-        defer { if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) } }
+        let stoppedAt = endedAt  // set when Stop came before the model was ready
         let finishStarted = Date()
         let backlog = await session.backlog
-        DiagnosticLog.write("finish: \(backlog.segmentsWaiting) segment(s) still to transcribe, \(Int(backlog.takenSeconds)) s of audio taken")
-        let stoppedAt = endedAt  // set when Stop came before the model was ready
+        DiagnosticLog.write("finish: started with \(backlog.segmentsWaiting) segment(s) still to transcribe")
         let report = await session.finishWithReport()
-        let reportWords = report.text.split(whereSeparator: { $0.isWhitespace }).count
-        DiagnosticLog.write("finish: done in \(String(format: "%.1f", Date().timeIntervalSince(finishStarted))) s; \(Int(report.audioSeconds)) s audio, \(report.segments) segments, \(reportWords) words transcribed, \(doc.wordCount) words in the document, \(report.droppedBuffers) dropped buffers, \(report.captureRestarts) mic restarts, \(report.errors.count) errors")
         endedAt = stoppedAt ?? report.endedAt
         if !report.errors.isEmpty { DiagnosticLog.write("listen ended with errors: \(report.diagnosis)") }
+        // If the model wrote more words than reached the document, text was lost on the way.
+        let modelWords = report.text.split(whereSeparator: { $0.isWhitespace }).count
+        DiagnosticLog.write("finish: done in \(String(format: "%.1f", Date().timeIntervalSince(finishStarted))) s; model took \(Int(report.audioSeconds)) s of audio, \(report.segments) segments, \(modelWords) words; document \(doc.wordCount) words; dropped buffers \(report.droppedBuffers)")
         save()
         runStopShortcut()
         closeAfterStop(nil)
@@ -415,7 +401,7 @@ final class ListenModel: ObservableObject {
     /// Closes the meeting or file screen and returns to Home.
     private func closeAfterStop(_ note: String?) {
         UIApplication.shared.isIdleTimerDisabled = false
-        watchdog?.invalidate(); watchdog = nil
+        health.stop()
         finishing = false
         let saved = fileURL != nil && !doc.isEmpty
         homeNote = lastError ?? note ?? (saved ? "Saved: \(title)" : nil)
@@ -592,7 +578,7 @@ final class ListenModel: ObservableObject {
                 sink.submit(samples)
                 rec?.append(samples)
                 if let l = meter.feed(samples) {
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self.level = l } }
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.level = l; self.health.noteLevel(l) } }
                 }
             }
             return true
@@ -619,61 +605,41 @@ final class ListenModel: ObservableObject {
         }
     }
 
-    // MARK: - Mic recovery and health (0.5.2)
+    // MARK: - Diagnostics
 
-    /// iOS can stop the mic without a route change: the engine stops itself on a
-    /// configuration change, a media-services reset kills it, or buffers just stop.
-    /// Restart it, and mark the gap in the transcript.
-    private func restartMic(_ reason: String, rebuild: Bool = false) {
-        guard phase == .recording else {
-            DiagnosticLog.write("mic: \(reason), while \(phase); nothing to restart")
-            if rebuild { capture.rebuildEngine() }
-            return
-        }
-        let now = Date()
-        micRestarts = micRestarts.filter { now.timeIntervalSince($0) < 60 } + [now]
-        guard micRestarts.count <= 5 else {
-            DiagnosticLog.write("mic: gave up restarting (\(reason))")
-            if lastError == nil { lastError = "The microphone keeps stopping. Stop and start again; everything heard so far is saved." }
-            return
-        }
-        DiagnosticLog.write("mic: restarting, \(reason)")
-        if rebuild { capture.rebuildEngine() } else { capture.stop() }
-        guard openMic() else { DiagnosticLog.write("mic: restart failed: \(lastError ?? "unknown")"); return }
-        guard let session, feed.isAttached else { return }
-        let name = AudioCapture.currentInputName
+    /// TEMPORARY (0.5.3): one line per 30 s of a meeting; see MeetingHealth.
+    private func logHealth() {
+        let mic = capture.takeBufferStats()
+        let toModel = feed.takePassedSamples()
+        let window = health.takeWindow()
+        let queued = Int(feed.waitingSeconds), flowing = feed.isAttached, words = doc.wordCount
+        let s = session
         Task {
-            let at = await session.audioSeconds
-            await session.noteCaptureRestart()
-            doc.noteCaptureRestart(device: name, atOffset: at)
-            revision += 1
+            let b = await s?.backlog
+            let lastAgo = mic.lastAgo.map { String(format: "%.1f s ago", $0) } ?? "never"
+            let model = b.map { "model has taken \(Int($0.takenSeconds)) s, \($0.segmentsWaiting) segment(s) waiting" } ?? "model not ready"
+            DiagnosticLog.write("health: mic \(mic.count) buffers (last \(lastAgo)), \(window); \(flowing ? "flowing to the model" : "queued \(queued) s"), \(toModel / 16_000) s handed over; \(model); document \(words) words")
         }
     }
 
-    private func watchdogTick() {
-        guard phase == .recording else { return }
-        if let gap = capture.secondsSinceLastBuffer, gap > 3 {
-            restartMic("no audio from the microphone for \(Int(gap)) s")
-        }
-        if Date().timeIntervalSince(lastHealth) >= 30 {
-            lastHealth = Date()
-            let buffers = capture.takeBufferCount()
-            let passed = feed.takePassedSamples()
-            let attached = feed.isAttached
-            let queued = feed.waitingSeconds
-            let words = doc.wordCount
-            let level = self.level
-            let s = session
-            Task {
-                let b = await s?.backlog
-                DiagnosticLog.write("health: mic buffers \(buffers), to the model \(passed / 16_000) s, flowing \(attached), waiting \(Int(queued)) s, model has taken \(b.map { String(Int($0.takenSeconds)) } ?? "-") s, segments waiting \(b.map { String($0.segmentsWaiting) } ?? "-"), words \(words), level \(String(format: "%.2f", level))")
-            }
+    private static func routeReason(_ raw: UInt?) -> String {
+        guard let raw, let r = AVAudioSession.RouteChangeReason(rawValue: raw) else { return "unknown" }
+        switch r {
+        case .newDeviceAvailable: return "new device"
+        case .oldDeviceUnavailable: return "device gone"
+        case .categoryChange: return "category change"
+        case .override: return "override"
+        case .wakeFromSleep: return "wake from sleep"
+        case .noSuitableRouteForCategory: return "no suitable route"
+        case .routeConfigurationChange: return "route configuration change"
+        default: return "reason \(raw)"
         }
     }
 
     // MARK: - Events
 
     private func handle(_ event: DictationSession.Event) {
+        health.note(event)
         switch event {
         case .speechStarted, .segmentCaptured:
             break
@@ -731,23 +697,28 @@ final class ListenModel: ObservableObject {
     /// new input and marks it in the transcript.
     private func observeAudioSession() {
         let nc = NotificationCenter.default
+        // Logged only, to see on a real phone whether any of these line up with the
+        // point where the audio stopped (0.5.3). Nothing is done in response.
+        observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { DiagnosticLog.write("iOS: audio engine configuration changed while \(self.phase)") }
+        })
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { self.restartMic("iOS reset its audio services", rebuild: true) }
+            MainActor.assumeIsolated { DiagnosticLog.write("iOS: audio services were reset while \(self.phase)") }
         })
         observers.append(nc.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
-            DiagnosticLog.write("memory warning from iOS")
+            MainActor.assumeIsolated { DiagnosticLog.write("iOS: memory warning while \(self.phase)") }
         })
         observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { DiagnosticLog.write("app went to the background (\(self.phase))") }
+            MainActor.assumeIsolated { DiagnosticLog.write("app went to the background while \(self.phase)") }
         })
         observers.append(nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { DiagnosticLog.write("app came back to the foreground (\(self.phase))") }
+            MainActor.assumeIsolated { DiagnosticLog.write("app came back while \(self.phase)") }
         })
         observers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
             let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let opts = n.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             MainActor.assumeIsolated {
-                DiagnosticLog.write("audio interruption \(raw == AVAudioSession.InterruptionType.began.rawValue ? "began" : "ended") while \(self.phase)")
+                DiagnosticLog.write("iOS: audio interruption \(raw == AVAudioSession.InterruptionType.began.rawValue ? "began" : "ended") while \(self.phase)")
                 if raw == AVAudioSession.InterruptionType.began.rawValue, self.phase == .recording {
                     self.interrupted = true
                     self.pause()
@@ -763,7 +734,7 @@ final class ListenModel: ObservableObject {
         observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { n in
             let reason = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             MainActor.assumeIsolated {
-                DiagnosticLog.write("audio route changed (reason \(reason.map(String.init) ?? "?")) to \(AudioCapture.currentInputName) while \(self.phase)")
+                DiagnosticLog.write("iOS: audio route changed (\(Self.routeReason(reason))), input now \(AudioCapture.currentInputName), while \(self.phase)")
                 guard self.phase == .recording,
                       reason == AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue
                         || reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
