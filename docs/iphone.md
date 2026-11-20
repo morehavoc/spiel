@@ -91,3 +91,10 @@ folder somewhere else first if you want to keep them.
 ## Run a Shortcut when Listen stops
 
 gear button on the home screen → **Shortcut When Listen Stops**. See [the Shortcuts guide](shortcuts.md).
+
+## If something goes wrong
+
+Tap the gear on the home screen, then **Send Diagnostics…**, and send it to
+spiel@christophermoravec.com. It's a log of what the app did (when recording started, when the
+speech model was ready, whether the microphone kept delivering audio). It never includes what
+was said.

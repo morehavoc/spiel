@@ -22,9 +22,13 @@ final class PendingFeed: @unchecked Sendable {
     /// Seconds of audio waiting for the model.
     var waitingSeconds: Double { lock.lock(); defer { lock.unlock() }; return Double(queued) / 16_000 }
 
+    private var passed = 0
+    /// Samples handed straight to the session since the last call (health log).
+    func takePassedSamples() -> Int { lock.lock(); defer { lock.unlock() }; let n = passed; passed = 0; return n }
+
     func submit(_ s: [Float]) {
         lock.lock()
-        if let t = target { lock.unlock(); t.submit(s); return }
+        if let t = target { passed += s.count; lock.unlock(); t.submit(s); return }
         if queued + s.count <= Self.maxSamples {
             queue.append(.samples(s)); queued += s.count
         } else {

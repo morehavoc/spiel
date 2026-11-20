@@ -286,6 +286,9 @@ struct HomeView: View {
                         Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
                             Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
                         }
+                        Divider()
+                        // Events and counts only, never transcript text.
+                        ShareLink(item: DiagnosticLog.url) { Label("Send Diagnostics…", systemImage: "stethoscope") }
                     } label: { Image(systemName: "gearshape") }
                     .accessibilityLabel("Settings")
                 }

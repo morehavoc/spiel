@@ -9,7 +9,35 @@ import Foundation
 public final class AudioCapture: @unchecked Sendable {
     public static let sampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    /// A `var`: after iOS resets its media services the old engine is dead for good
+    /// and a new one is needed (`rebuildEngine`).
+    private var engine = AVAudioEngine()
+    private var configObserver: NSObjectProtocol?
+    /// Called (on any thread) when the running engine stops itself because the audio
+    /// configuration changed. Nothing else says so: the tap simply stops firing.
+    public var onConfigurationChange: (() -> Void)?
+    private let tickLock = NSLock()
+    private var lastBuffer: Date?
+    private var buffers = 0
+    /// Seconds since the mic last delivered audio, while running; nil when stopped.
+    public var secondsSinceLastBuffer: TimeInterval? {
+        tickLock.lock(); defer { tickLock.unlock() }
+        guard isRunning, let t = lastBuffer else { return nil }
+        return Date().timeIntervalSince(t)
+    }
+    /// Buffers delivered since the last call (for the health log).
+    public func takeBufferCount() -> Int {
+        tickLock.lock(); defer { tickLock.unlock() }
+        let n = buffers; buffers = 0; return n
+    }
+    private func noteBuffer() {
+        tickLock.lock(); lastBuffer = Date(); buffers += 1; tickLock.unlock()
+    }
+    /// After a media-services reset: drop the dead engine and make a new one.
+    public func rebuildEngine() {
+        stop()
+        engine = AVAudioEngine()
+    }
     private var converter: AVAudioConverter?
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
                                        channels: 1, interleaved: false)!
@@ -47,6 +75,7 @@ public final class AudioCapture: @unchecked Sendable {
 
     public func start(handler: @escaping @Sendable ([Float]) -> Void) throws {
         try Self.configureSession()
+        tickLock.lock(); lastBuffer = Date(); tickLock.unlock()
         #if DEBUG
         if let path = Self.feedFile { try startFeed(path, handler: handler); return }
         #endif
@@ -60,7 +89,8 @@ public final class AudioCapture: @unchecked Sendable {
         converter = conv
         let target = self.target
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            self?.noteBuffer()
             guard let monoBuf = Self.downmix(buffer, to: mono) else { return }
             let ratio = target.sampleRate / mono.sampleRate
             let cap = AVAudioFrameCount(Double(monoBuf.frameLength) * ratio) + 32
@@ -81,6 +111,10 @@ public final class AudioCapture: @unchecked Sendable {
             input.removeTap(onBus: 0)
             throw CaptureError.engine("\(error)")
         }
+        configObserver.map { NotificationCenter.default.removeObserver($0) }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in self?.onConfigurationChange?() }
         isRunning = true
         engineStarted = true
     }
@@ -91,6 +125,7 @@ public final class AudioCapture: @unchecked Sendable {
     /// (VAD → Parakeet → live document → autosave) runs in the simulator.
     private var feeder: Task<Void, Never>?
     static var feedFile: String? { ProcessInfo.processInfo.environment["SPIEL_FEED_FILE"] }
+    nonisolated(unsafe) static var stalledOnce = false
 
     private func startFeed(_ path: String, handler: @escaping @Sendable ([Float]) -> Void) throws {
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
@@ -109,16 +144,25 @@ public final class AudioCapture: @unchecked Sendable {
         }
         let samples = Array(UnsafeBufferPointer(start: out.floatChannelData![0], count: Int(out.frameLength)))
         isRunning = true
-        feeder = Task.detached {
+        feeder = Task.detached { [weak self] in
             let chunk = 1600  // 100 ms
             var i = 0
+            // SPIEL_FEED_STALL=N: go silent (no buffers at all) once, N s in, to test the watchdog.
+            let stallAt = Double(ProcessInfo.processInfo.environment["SPIEL_FEED_STALL"] ?? "").map { Int($0 * 16_000) }
             while i < samples.count, !Task.isCancelled {
+                if let at = stallAt, i >= at, !AudioCapture.stalledOnce {
+                    AudioCapture.stalledOnce = true
+                    while !Task.isCancelled { try? await Task.sleep(nanoseconds: 100_000_000) }
+                    return
+                }
+                self?.noteBuffer()
                 handler(Array(samples[i..<min(i + chunk, samples.count)]))
                 i += chunk
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
-            // Trailing silence so the last segment closes on its own.
-            for _ in 0..<20 where !Task.isCancelled {
+            // Then silence, like a quiet room, until stopped (a mic never just ends).
+            while !Task.isCancelled {
+                self?.noteBuffer()
                 handler([Float](repeating: 0, count: chunk))
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
@@ -131,6 +175,8 @@ public final class AudioCapture: @unchecked Sendable {
         feeder?.cancel(); feeder = nil
         #endif
         guard isRunning else { return }
+        configObserver.map { NotificationCenter.default.removeObserver($0) }
+        configObserver = nil
         if engineStarted {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
