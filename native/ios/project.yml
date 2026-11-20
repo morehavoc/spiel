@@ -44,7 +44,7 @@ targets:
       properties:
         CFBundleDisplayName: Spiel Listen
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "0.5.0"
+        CFBundleShortVersionString: "0.5.1"
         CFBundleVersion: "2"
         UILaunchScreen: {}
         NSCalendarsFullAccessUsageDescription: Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.

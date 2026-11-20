@@ -74,6 +74,8 @@ struct TranscriptList: View {
     /// Saved transcripts with audio: tapping a timestamp plays from there.
     var onStamp: ((TimeInterval) -> Void)? = nil
     @AppStorage(TextSize.key) private var size = TextSize.standard
+    /// iOS 17 only (no scroll-phase API): when he last dragged the list.
+    @State private var lastDrag: Date?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -95,10 +97,17 @@ struct TranscriptList: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                         .onAppear { follow?.wrappedValue = true }
-                        .onDisappear { if follow != nil, !lines.isEmpty { follow?.wrappedValue = false } }
+                        .onDisappear {
+                            // iOS 17 fallback: stop following only when HE scrolled away.
+                            // New text pushing the marker off screen is not a reason to stop.
+                            if #unavailable(iOS 18), let d = lastDrag, Date().timeIntervalSince(d) < 2 {
+                                follow?.wrappedValue = false
+                            }
+                        }
                 }
                 .padding(.horizontal, 22).padding(.vertical, 16)
             }
+            .modifier(FollowTracker(follow: follow, lastDrag: $lastDrag))
             .onChange(of: revision) {
                 if query.isEmpty, follow?.wrappedValue == true {
                     withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -116,6 +125,7 @@ struct TranscriptList: View {
             .overlay(alignment: .bottom) {
                 if let follow, !follow.wrappedValue, query.isEmpty {
                     Button {
+                        follow.wrappedValue = true
                         withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                     } label: {
                         Label("Back to live", systemImage: "arrow.down")
@@ -136,6 +146,36 @@ struct TranscriptList: View {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return lines }
         return lines.filter { $0.text.localizedCaseInsensitiveContains(q) }
+    }
+}
+
+/// Live only. Following stops when HE scrolls up away from the newest line, and starts
+/// again when he scrolls back to the bottom or taps Back to live. Text arriving never
+/// changes it (0.5.1: a burst of caught-up text used to switch it off for good).
+struct FollowTracker: ViewModifier {
+    let follow: Binding<Bool>?
+    @Binding var lastDrag: Date?
+    @State private var touching = false
+
+    func body(content: Content) -> some View {
+        if let follow {
+            if #available(iOS 18, *) {
+                content
+                    .onScrollPhaseChange { _, phase in
+                        touching = phase == .interacting || phase == .decelerating
+                    }
+                    .onScrollGeometryChange(for: Bool.self) { g in
+                        g.visibleRect.maxY >= g.contentSize.height - 80
+                    } action: { _, nearBottom in
+                        if nearBottom { follow.wrappedValue = true }
+                        else if touching { follow.wrappedValue = false }
+                    }
+            } else {
+                content.simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in lastDrag = Date() })
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -431,7 +471,9 @@ struct MeetingView: View {
         .themed()
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .modifier(SearchIf(enabled: !model.doc.isEmpty, query: $query))
+        // Always on: adding .searchable only once the first words arrived changed the view's
+        // identity and rebuilt the transcript list mid-meeting, which left it not following (0.5.0).
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search this meeting")
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
@@ -572,18 +614,6 @@ struct MeetingView: View {
         let s = Int(t)
         return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
                          : String(format: "%d:%02d", s / 60, s % 60)
-    }
-}
-
-struct SearchIf: ViewModifier {
-    let enabled: Bool
-    @Binding var query: String
-    func body(content: Content) -> some View {
-        if enabled {
-            content.searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search this meeting")
-        } else {
-            content
-        }
     }
 }
 

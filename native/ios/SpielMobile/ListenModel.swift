@@ -364,8 +364,20 @@ final class ListenModel: ObservableObject {
         if feed.overflowed { lastError = "The speech model took more than 15 minutes to load, so part of this meeting has no transcript." }
         if finishing {
             finishing = false
+            catchingUp = false
             await finishMeeting(session)
+            return
         }
+        // Keep "Catching up" on screen until the queued audio has actually been written
+        // out, not just handed over (0.5.1). Capped, so a stuck engine can't pin it.
+        let target = Double(replayed) / 16_000 - 0.5
+        let deadline = Date().addingTimeInterval(180)
+        while inSession, Date() < deadline {
+            let b = await session.backlog
+            if b.takenSeconds >= target && b.segmentsWaiting == 0 { break }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        DiagnosticLog.write("catch-up written out \(String(format: "%.1f", Date().timeIntervalSince(started))) s after the model loaded")
         catchingUp = false
     }
 
