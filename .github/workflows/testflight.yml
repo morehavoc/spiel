@@ -28,6 +28,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # Apple requires the iOS 27 SDK (Xcode 27) for uploads from April 2027 (ITMS-90725,
+      # first warned on build 112). Use the newest Xcode 27 on the runner; until the image
+      # has one, keep the default and say so.
+      - name: Select Xcode 27 if present
+        run: |
+          x=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$x" ]; then sudo xcode-select -s "$x/Contents/Developer"; else echo "::warning::No Xcode 27 on this runner; building with the default (iOS 26 SDK). Fine until April 2027."; fi
+          xcodebuild -version
+
       - name: Secrets present
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
