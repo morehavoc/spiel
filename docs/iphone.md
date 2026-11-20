@@ -90,7 +90,7 @@ folder somewhere else first if you want to keep them.
 
 ## Run a Shortcut when Listen stops
 
-gear button on the home screen → **Shortcut When Listen Stops**. See [the Shortcuts guide](shortcuts.md).
+Gear button on the home screen → **Shortcut When Listen Stops**. See [the Shortcuts guide](shortcuts.md).
 
 ## If something goes wrong
 
