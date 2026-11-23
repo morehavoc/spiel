@@ -27,7 +27,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private let maxBacklog = 16_000 / 2   // 0.5 s
     private(set) var isRunning = false
     /// Set when the stream stopped on its own (permission revoked, display gone).
-    var onStopped: ((String) -> Void)?
+    /// Called on ScreenCaptureKit's queue, hence `@Sendable` (see AudioCapture.start).
+    var onStopped: (@Sendable (String) -> Void)?
 
     func start() async throws {
         guard !isRunning else { return }

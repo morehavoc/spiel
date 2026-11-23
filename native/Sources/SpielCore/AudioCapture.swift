@@ -19,7 +19,7 @@ public final class AudioCapture: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var monoFormat: AVAudioFormat?
-    private var onSamples: (([Float]) -> Void)?
+    private var onSamples: (@Sendable ([Float]) -> Void)?
     private var configObserver: NSObjectProtocol?
     private(set) public var isRunning = false
 
@@ -155,13 +155,18 @@ public final class AudioCapture: @unchecked Sendable {
     /// Starts the mic. `handler` is called on the audio thread with 16 kHz mono
     /// samples -- keep it cheap and non-blocking.
     ///
+    /// Both closures are `@Sendable` because neither runs on the main thread. As a
+    /// plain function type, a closure written in `@MainActor` code is inferred
+    /// main-actor-isolated, and closures nested in it get a run-time main-thread
+    /// check that release builds (macOS 26 SDK) trap on: the 2.10.0 Listen crash.
+    ///
     /// `onRouteChange` fires on a private serial queue (NOT the main thread — hop
     /// if you touch UI) after the audio route changed mid-capture and capture was
     /// restarted on the new default input — with the device name on success, or the
     /// error text if the restart failed (capture is then stopped). Nil keeps the old
     /// behaviour of merely logging it.
-    public func start(handler: @escaping ([Float]) -> Void,
-                      onRouteChange: ((String) -> Void)? = nil) throws {
+    public func start(handler: @escaping @Sendable ([Float]) -> Void,
+                      onRouteChange: (@Sendable (String) -> Void)? = nil) throws {
         try control.sync { try startLocked(handler: handler, onRouteChange: onRouteChange) }
     }
 
@@ -173,8 +178,8 @@ public final class AudioCapture: @unchecked Sendable {
     /// live test (capture stopped at the switch, 0 restarts).
     private let control = DispatchQueue(label: "com.morehavoc.spiel.audio-capture")
 
-    private func startLocked(handler: @escaping ([Float]) -> Void,
-                             onRouteChange: ((String) -> Void)?) throws {
+    private func startLocked(handler: @escaping @Sendable ([Float]) -> Void,
+                             onRouteChange: (@Sendable (String) -> Void)?) throws {
         guard !isRunning else { return }
         onSamples = handler
         self.onRouteChange = onRouteChange
@@ -196,7 +201,7 @@ public final class AudioCapture: @unchecked Sendable {
         isRunning = true
     }
 
-    private var onRouteChange: ((String) -> Void)?
+    private var onRouteChange: (@Sendable (String) -> Void)?
     /// Restarts performed after a route change since `start()`.
     private(set) public var restarts = 0
 

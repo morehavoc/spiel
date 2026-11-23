@@ -504,7 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let sys: SystemAudioCapture? = (mode == .listen && SystemAudioCapture.enabled) ? systemAudio : nil
             try capture.start(handler: { [weak self] mic in
                 guard let self else { return }
-                let samples = sys.map { $0.mix(mic) } ?? mic
+                let samples = sys?.mix(mic) ?? mic
                 // Synchronous, ordered handoff — see AudioSink. A Task per buffer
                 // has no ordering guarantee and would shuffle mic audio.
                 session.sink.submit(samples)
