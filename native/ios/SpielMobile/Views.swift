@@ -307,7 +307,7 @@ struct HomeView: View {
                 Button("Download Now") { model.downloadModel() }
                 Button("Later", role: .cancel) {}
             } message: {
-                Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 500 MB. Wi-Fi is recommended. After that, Spiel works with no internet.")
+                Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 1.2 GB. Wi-Fi is recommended. After that, Spiel works with no internet.")
             }
             .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
                 TextField("Shortcut name", text: $shortcutName)
@@ -343,7 +343,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .needsDownload:
             HomeHero(onNew: { askDownload = true }, buttonTitle: "Download speech model", buttonIcon: "arrow.down.circle.fill",
-                     note: "Spiel needs a one-time download of about 500 MB before it can listen. Wi-Fi recommended.")
+                     note: "Spiel needs a one-time download of about 1.2 GB before it can listen. Wi-Fi recommended.")
         case .failed(let text):
             VStack(spacing: 18) {
                 Text(text).foregroundStyle(Theme.record).multilineTextAlignment(.center)

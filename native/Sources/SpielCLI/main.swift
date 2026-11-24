@@ -10,7 +10,7 @@ func usage() -> Never {
     FileHandle.standardError.write("""
     spiel-cli — headless harness for SpielCore
 
-      spiel-cli transcribe <audiofile> [--engine unified|v3|v2|apple] [--no-glossary]
+      spiel-cli transcribe <audiofile> [--engine unified|unified-fp16|v3|v2|apple] [--no-glossary]
       spiel-cli glossary "<text>"
       spiel-cli doctor
       spiel-cli selftest
@@ -125,6 +125,8 @@ func makeTranscriber(_ args: [String]) -> any Transcriber {
     case "apple": return AppleSpeechTranscriber()
     case "v2": return ParakeetTranscriber(version: .v2)
     case "v3": return ParakeetTranscriber()
+    // The iPhone app's engine: fp16 encoder, no acoustic vocabulary boost.
+    case "unified-fp16": return ParakeetUnifiedTranscriber(boost: false, precision: .fp16)
     default: return ParakeetUnifiedTranscriber(boost: !args.contains("--no-boost"))
     }
 }
@@ -336,6 +338,64 @@ case "replay":
             print("diagnosis : \(report.diagnosis)")
             print("REFERENCE (\(refWords) words): \(whole)")
             print("PIPELINE  (\(gotWords) words): \(report.text)")
+        } catch {
+            FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
+            exitCode = 1
+        }
+    }
+    semaphore.wait()
+    exit(exitCode)
+
+case "replay-sweep":
+    // `replay` at many start offsets with the engine loaded ONCE: trims the first
+    // t seconds (t = 0, step, 2*step … --max) so the 14 s length cut lands on
+    // different words. One JSON line per offset: the one-shot reference, the
+    // pipeline text and the segment lengths. Built 2026-11-23 to compare engines on
+    // Christopher's counting recording (a model load per replay made it hours).
+    guard args.count > 1 else { usage() }
+    let url = URL(fileURLWithPath: args[1])
+    let step = arg("--step", in: args).flatMap(Double.init) ?? 0.5
+    let maxOffset = arg("--max", in: args).flatMap(Double.init) ?? 14
+    final class Segs: @unchecked Sendable { let lock = NSLock(); var v: [Double] = []
+        func add(_ d: Double) { lock.lock(); v.append(d); lock.unlock() }
+        func take() -> [Double] { lock.lock(); defer { v = []; lock.unlock() }; return v } }
+    let semaphore = DispatchSemaphore(value: 0)
+    var exitCode: Int32 = 0
+    Task.detached {
+        defer { semaphore.signal() }
+        do {
+            let all = try AudioCapture.loadFile(at: url)
+            let transcriber = makeTranscriber(args)
+            let t0 = Date()
+            try await transcriber.prepare()
+            FileHandle.standardError.write("engine ready in \(Int(Date().timeIntervalSince(t0))) s\n".data(using: .utf8)!)
+            let session = DictationSession(transcriber: transcriber)
+            try await session.prepare()
+            let segs = Segs()
+            await session.setEventHandler { event in
+                if case .segmentCaptured(_, let s) = event { segs.add(s) }
+            }
+            await session.setGlossary(Glossary(entries: [:]))
+            var k = 0
+            while Double(k) * step <= maxOffset + 1e-6 {
+                let t = Double(k) * step
+                let samples = Array(all[min(all.count, Int(t * AudioCapture.sampleRate))...])
+                let whole = try await transcriber.transcribe(samples: samples)
+                await session.reset()
+                _ = segs.take()
+                var i = 0
+                while i < samples.count {
+                    let end = min(i + 341, samples.count)
+                    session.sink.submit(Array(samples[i..<end]))
+                    i = end
+                }
+                let report = await session.finishWithReport()
+                let row: [String: Any] = ["t": t, "ref": whole, "pip": report.text, "segs": segs.take()]
+                let data = try JSONSerialization.data(withJSONObject: row)
+                print(String(data: data, encoding: .utf8)!)
+                fflush(stdout)
+                k += 1
+            }
         } catch {
             FileHandle.standardError.write("ERROR: \(error)\n".data(using: .utf8)!)
             exitCode = 1

@@ -1,4 +1,6 @@
+#if canImport(AppKit)
 import AppKit
+#endif
 import Foundation
 import FluidAudio
 
@@ -36,9 +38,33 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
     /// Download progress for the model load (first run fetches ~615 MB); nil = none.
     private let progress: ModelProgressHandler?
 
-    public init(boost: Bool = true, progress: ModelProgressHandler? = nil) {
+    /// Encoder precision. The Mac ships int8 (596 MB). The iPhone app uses fp16
+    /// (1.19 GB): the int8 encoder cannot build an execution plan on an A16 (iPhone 14
+    /// Pro) on ANY compute unit, while fp16 loads (FluidAudio issue #828).
+    public let precision: UnifiedEncoderPrecision
+
+    public init(boost: Bool = true, precision: UnifiedEncoderPrecision = .int8,
+                progress: ModelProgressHandler? = nil) {
         self.boostEnabled = boost
+        self.precision = precision
         self.progress = progress
+    }
+
+    /// FluidAudio's default cache folder for this model (Application Support).
+    public static var cacheDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+            .appendingPathComponent(Repo.parakeetUnified.folderName, isDirectory: true)
+    }
+
+    /// True when the files `prepare()` needs are on disk, so it will not download.
+    public static func isDownloaded(precision: UnifiedEncoderPrecision = .int8) -> Bool {
+        let fm = FileManager.default
+        let names = [ModelNames.ParakeetUnified.offlineEncoderFile(precision: precision),
+                     ModelNames.ParakeetUnified.decoderFile,
+                     ModelNames.ParakeetUnified.jointDecisionFile,
+                     ModelNames.ParakeetUnified.vocab]
+        return names.allSatisfy { fm.fileExists(atPath: cacheDirectory.appendingPathComponent($0).path) }
     }
 
     // Frozen 2026-09-23 on 1,899 words of Christopher's speech + 435 words of
@@ -76,7 +102,7 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
     public func prepare() async throws {
         if manager != nil { return }
         do {
-            let m = UnifiedAsrManager()
+            let m = UnifiedAsrManager(encoderPrecision: precision)
             try await m.loadModels(progressHandler: ModelLoadProgress.handler(progress))
             manager = m
         } catch {
@@ -141,11 +167,15 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
         guard !term.contains(" ") else { return false }
         let lower = term.lowercased()
         if spelledCorrectly(lower) { return false }  // it is an English word (or words)
+        #if canImport(AppKit)
         let range = NSRange(location: 0, length: (lower as NSString).length)
         spellLock.lock()
         let guesses = NSSpellChecker.shared.guesses(forWordRange: range, in: lower, language: "en",
                                                     inSpellDocumentWithTag: 0) ?? []
         spellLock.unlock()
+        #else
+        let guesses: [String] = []
+        #endif
         return !guesses.contains { Self.similarity(Self.normalize($0), norm) >= neighbourSimilarity }
     }
 
@@ -308,12 +338,18 @@ public actor ParakeetUnifiedTranscriber: Transcriber {
     // actor, not the main thread; one lock keeps two callers from overlapping in it.
     private static let spellLock = NSLock()
 
+    /// On iOS (no AppKit) every token counts as a word, so nothing is boosted or
+    /// repaired; the iPhone app runs with `boost: false` anyway.
     static func spelledCorrectly(_ s: String) -> Bool {
+        #if !canImport(AppKit)
+        return true
+        #else
         spellLock.lock()
         defer { spellLock.unlock() }
         return NSSpellChecker.shared.checkSpelling(
             of: s, startingAt: 0, language: "en", wrap: false,
             inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        #endif
     }
 
     static func normalize(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }

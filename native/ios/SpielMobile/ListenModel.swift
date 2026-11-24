@@ -81,9 +81,9 @@ final class ListenModel: ObservableObject {
         // The iPhone log holds events and counts, never transcript text, so it is
         // always on; Send Diagnostics (gear menu on Home) shares it.
         DiagnosticLog.setEnabled(true, persist: false)
-        DiagnosticLog.write("app launched: build \(Self.currentBuild), speech model on the phone: \(ParakeetTranscriber.isDownloaded(version: .v3))")
+        DiagnosticLog.write("app launched: build \(Self.currentBuild), speech model on the phone: \(Self.modelDownloaded) (\(Self.engineName))")
         observeAudioSession()
-        if ParakeetTranscriber.isDownloaded(version: .v3) {
+        if Self.modelDownloaded {
             phase = .ready
             preparing = Self.preparingText()
             Task { await loadEngine() }
@@ -133,13 +133,13 @@ final class ListenModel: ObservableObject {
 
     private func loadEngine() async {
         let loadStarted = Date()
-        let transcriber = ParakeetTranscriber(version: .v3) { p in
+        let transcriber = ParakeetUnifiedTranscriber(boost: false, precision: Self.modelPrecision) { p in
             let text: String
             var step = 0
             switch p.phase {
             case .listing: text = "Finding the speech model…"
             case .downloading:
-                text = "Downloading the speech model (about 500 MB, once)"; step = 1
+                text = "Downloading the speech model (about 1.2 GB, once)"; step = 1
             case .compiling:
                 text = "Preparing the speech model for the Neural Engine. The first time can take a few minutes."; step = 2
             }
@@ -179,6 +179,7 @@ final class ListenModel: ObservableObject {
         loadStep = nil
         preparing = nil
         Self.excludeModelsFromBackup()
+        Self.removeOldModel()
         if case .loading = phase { phase = .ready }
         if case .failed = phase { phase = .ready }
         if inSession && phase != .transcribing { await catchUp(s) }
@@ -196,11 +197,36 @@ final class ListenModel: ObservableObject {
         #endif
     }
 
+    // MARK: - Speech model
+
+    /// Parakeet Unified EN 0.6B, the Mac's default engine since 2.2.0, replacing TDT v3
+    /// on the iPhone in 0.5.4. Measured 2026-11-23 on Christopher's counting recording
+    /// cut at 29 different places: v3 garbled the word at the 14 s cut and sometimes
+    /// returned nothing for a whole clear 10-14 s piece; Unified did neither.
+    /// fp16, not the Mac's int8: the int8 encoder cannot load on an A16 (iPhone 14 Pro)
+    /// on any compute unit (FluidAudio issue #828). No acoustic vocabulary boost here
+    /// (it needs a second 98 MB model and the macOS spell checker); the text glossary still runs.
+    static let modelPrecision: UnifiedEncoderPrecision = .fp16
+    static let engineName = "parakeet-unified-en-0.6b (fp16)"
+    static var modelDownloaded: Bool { ParakeetUnifiedTranscriber.isDownloaded(precision: modelPrecision) }
+
+    /// 0.5.x used TDT v3 (~460 MB). Once Unified has loaded, v3 is dead weight on the phone.
+    private static func removeOldModel() {
+        let old = AsrModels.defaultCacheDirectory(for: .v3)
+        guard FileManager.default.fileExists(atPath: old.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: old)
+            DiagnosticLog.write("removed the old speech model (TDT v3)")
+        } catch {
+            DiagnosticLog.write("could not remove the old speech model: \(error)")
+        }
+    }
+
     /// The speech model is re-downloadable, so it stays out of iCloud/device backups
-    /// (Apple's data-storage rule; it would also add ~500 MB to every backup).
+    /// (Apple's data-storage rule; it would also add ~1.2 GB to every backup).
     /// Transcripts and kept audio live in Documents and ARE backed up.
     private static func excludeModelsFromBackup() {
-        var dir = AsrModels.defaultCacheDirectory(for: .v3).deletingLastPathComponent()
+        var dir = ParakeetUnifiedTranscriber.cacheDirectory.deletingLastPathComponent()
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         do { try dir.setResourceValues(values) } catch { DiagnosticLog.write("could not exclude models from backup: \(error)") }
@@ -669,7 +695,7 @@ final class ListenModel: ObservableObject {
         let fm = TranscriptDocument.Frontmatter(
             title: title, startedAt: startedAt, endedAt: endedAt ?? Date(),
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev") (iPhone)",
-            inputDevice: AudioCapture.currentInputName, engine: "parakeet-tdt-0.6b-v3",
+            inputDevice: AudioCapture.currentInputName, engine: Self.engineName,
             location: location, audio: audioURL?.lastPathComponent, sourceFile: sourceFile, fileSeconds: fileSeconds)
         do {
             try TranscriptStore.save(doc.render(frontmatter: fm), to: url, replacing: fileURL)

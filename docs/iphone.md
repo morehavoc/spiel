@@ -20,7 +20,7 @@ from the Mac app on languages and vocabulary is in the [FAQ](faq.md).
 
 ## First launch
 
-Spiel asks before downloading its speech model, a one-time download of about 500 MB, so
+Spiel asks before downloading its speech model, a one-time download of about 1.2 GB, so
 Wi-Fi is a good idea. You can choose **Later** and tap **Download speech model** on the home
 screen when you're ready. Setup then shows two steps:
 
