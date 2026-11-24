@@ -38,7 +38,7 @@ public actor ParakeetTranscriber: Transcriber {
             let mgr = AsrManager(config: .default)
             try await mgr.loadModels(models)
             self.manager = mgr
-            self.decoderState = try TdtDecoderState()
+            self.decoderState = try TdtDecoderState(decoderLayers: version.decoderLayers)
         } catch {
             throw TranscriberError.unavailable("Parakeet model load failed: \(error)")
         }
@@ -62,7 +62,7 @@ public actor ParakeetTranscriber: Transcriber {
         // across segments of one dictation preserves linguistic context at segment
         // boundaries -- the thing the old chunked-Whisper pipeline could never do,
         // because every segment was an independent HTTP request.
-        if decoderState == nil { decoderState = try TdtDecoderState() }
+        if decoderState == nil { decoderState = try TdtDecoderState(decoderLayers: version.decoderLayers) }
         var state = decoderState!
         do {
             let result = try await manager.transcribe(input, decoderState: &state)
@@ -80,6 +80,6 @@ public actor ParakeetTranscriber: Transcriber {
     /// Clears carried decoder context. Call between dictations so one session's
     /// last word cannot bias the next session's first.
     public func resetContext() {
-        decoderState = try? TdtDecoderState()
+        decoderState = try? TdtDecoderState(decoderLayers: version.decoderLayers)
     }
 }

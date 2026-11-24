@@ -125,6 +125,7 @@ func makeTranscriber(_ args: [String]) -> any Transcriber {
     case "apple": return AppleSpeechTranscriber()
     case "v2": return ParakeetTranscriber(version: .v2)
     case "v3": return ParakeetTranscriber()
+    case "110m": return ParakeetTranscriber(version: .tdtCtc110m)
     // The iPhone app's engine: fp16 encoder, no acoustic vocabulary boost.
     case "unified-fp16": return ParakeetUnifiedTranscriber(boost: false, precision: .fp16)
     default: return ParakeetUnifiedTranscriber(boost: !args.contains("--no-boost"))
