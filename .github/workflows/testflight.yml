@@ -19,7 +19,9 @@ concurrency:
 
 jobs:
   upload:
-    runs-on: macos-26
+    # xcode-27: GitHub's Xcode 27 image (macOS 27), GA 2026-10-15. Apple requires the iOS 27
+    # SDK for uploads from April 2027 (ITMS-90725); macos-26 only has Xcode 26.x.
+    runs-on: xcode-27
     timeout-minutes: 60
     env:
       TEAM_ID: WTCTU8TMQ4
@@ -28,13 +30,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # Apple requires the iOS 27 SDK (Xcode 27) for uploads from April 2027 (ITMS-90725,
-      # first warned on build 112). Use the newest Xcode 27 on the runner; until the image
-      # has one, keep the default and say so.
-      - name: Select Xcode 27 if present
+      # Pin the newest Xcode 27 on the image, and fail rather than quietly build with an older SDK.
+      - name: Select Xcode 27
         run: |
           x=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
-          if [ -n "$x" ]; then sudo xcode-select -s "$x/Contents/Developer"; else echo "::warning::No Xcode 27 on this runner; building with the default (iOS 26 SDK). Fine until April 2027."; fi
+          [ -n "$x" ] || { echo "::error::No Xcode 27 on this runner"; ls -d /Applications/Xcode*.app; exit 1; }
+          sudo xcode-select -s "$x/Contents/Developer"
           xcodebuild -version
 
       - name: Secrets present
