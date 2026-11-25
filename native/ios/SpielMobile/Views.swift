@@ -551,7 +551,38 @@ struct MeetingView: View {
     }
 
     @ViewBuilder private var controls: some View {
-        if model.phase == .transcribing { fileControls } else { meetingControls }
+        if model.reviewing { reviewControls } else if model.phase == .transcribing { fileControls } else { meetingControls }
+    }
+
+    @State private var confirmDelete = false
+
+    /// A finished file stays on screen until Save or Delete (0.5.6, his ask).
+    private var reviewControls: some View {
+        VStack(spacing: 10) {
+            if let err = model.lastError {
+                Text(err).font(.footnote).foregroundStyle(Theme.record).multilineTextAlignment(.center)
+            }
+            Text("Done: \(model.doc.wordCount) words. Tap the title to rename it.")
+                .font(.footnote).foregroundStyle(Theme.dim)
+            HStack(spacing: 12) {
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Text("Delete").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).tint(Theme.record)
+                Button { model.finishReview() } label: {
+                    Text("Save").font(.body.weight(.semibold)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(Theme.cyan)
+            }
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 6)
+        .background(.ultraThinMaterial.opacity(0.9))
+        .overlay(alignment: .top) { Rectangle().fill(Theme.cardStroke).frame(height: 1) }
+        .confirmationDialog("Delete this transcript?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { model.discardReview() }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private var fileControls: some View {

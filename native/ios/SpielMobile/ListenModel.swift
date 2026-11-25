@@ -61,6 +61,8 @@ final class ListenModel: ObservableObject {
     @Published private(set) var savedCount = 0
     /// One-line note for Home after a meeting closes ("Saved", or what went wrong).
     @Published var homeNote: String?
+    /// A transcribed file is finished and on screen for review; Save or Delete closes it.
+    @Published private(set) var reviewing = false
     private let feed = PendingFeed()
     private let health = MeetingHealth()  // TEMPORARY (0.5.3)
     private let capture = AudioCapture()
@@ -198,12 +200,17 @@ final class ListenModel: ObservableObject {
         let choice = speechModel
         let size = choice.sizeText
         let transcriber = choice.makeTranscriber { p in
-            let text: String
+            var text: String
             var step = 0
             switch p.phase {
             case .listing: text = "Finding the speech model…"
             case .downloading:
                 text = "Downloading the speech model (\(size), once)"; step = 1
+                // FluidAudio reports no compiling phase for these models (the compile runs
+                // inside loadWithRecovery with no handler), so 100 % downloaded IS step 2.
+                if (p.downloadFraction ?? 0) >= 0.999 {
+                    text = "Preparing the speech model for the Neural Engine. The first time can take a few minutes."; step = 2
+                }
             case .compiling:
                 text = "Preparing the speech model for the Neural Engine. The first time can take a few minutes."; step = 2
             }
@@ -578,8 +585,28 @@ final class ListenModel: ObservableObject {
             fileProgress = nil
             fileTask = nil
             phase = .ready
-            if startedAt != nil { closeAfterStop(nil) } else { homeNote = lastError; lastError = nil }
+            if startedAt != nil {
+                if doc.isEmpty { closeAfterStop(nil) } else { reviewing = true }
+            } else { homeNote = lastError; lastError = nil }
         }
+    }
+
+    /// Review screen → Save: the transcript is already saved (and re-saved on a rename).
+    func finishReview() {
+        guard reviewing else { return }
+        reviewing = false
+        save()
+        closeAfterStop(nil)
+    }
+
+    /// Review screen → Delete: removes the saved transcript.
+    func discardReview() {
+        guard reviewing else { return }
+        reviewing = false
+        if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+        fileURL = nil
+        lastError = nil
+        closeAfterStop("Deleted")
     }
 
     func cancelFile() { fileTask?.cancel() }
