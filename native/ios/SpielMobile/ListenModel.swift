@@ -42,6 +42,12 @@ final class ListenModel: ObservableObject {
     @Published private(set) var fileProgress: Double?
 
     private var session: DictationSession?
+    /// The speech model this iPhone runs (0.5.5): picked automatically, changeable in Settings.
+    @Published private(set) var speechModel: SpeechModel = SpeechModel.saved ?? .standard
+    /// The probe's answer: nil until it has run on this iOS version.
+    @Published private(set) var int8Supported: Bool? = SpeechModel.int8Supported
+    /// A switch in Settings is downloading or loading.
+    @Published private(set) var switchingModel = false
     /// 0.5: the model loads in the background; a meeting can start before it is ready.
     /// nil = ready (or not downloaded yet); otherwise the line Home and the meeting show.
     @Published private(set) var preparing: String?
@@ -81,9 +87,11 @@ final class ListenModel: ObservableObject {
         // The iPhone log holds events and counts, never transcript text, so it is
         // always on; Send Diagnostics (gear menu on Home) shares it.
         DiagnosticLog.setEnabled(true, persist: false)
-        DiagnosticLog.write("app launched: build \(Self.currentBuild), speech model on the phone: \(Self.modelDownloaded) (\(Self.engineName))")
+        let adopted = SpeechModel.adoptDownloaded()
+        if let adopted { speechModel = adopted }
+        DiagnosticLog.write("app launched: build \(Self.currentBuild), speech model: \(adopted?.engineName ?? "not chosen yet"), on the phone: \(adopted?.isDownloaded ?? false)")
         observeAudioSession()
-        if Self.modelDownloaded {
+        if let adopted, adopted.isDownloaded {
             phase = .ready
             preparing = Self.preparingText()
             Task { await loadEngine() }
@@ -96,11 +104,64 @@ final class ListenModel: ObservableObject {
                 }
             }
             #endif
-        } else {
+        } else if adopted != nil {
             phase = .needsDownload
-            #if DEBUG
-            if ProcessInfo.processInfo.environment["SPIEL_AUTODOWNLOAD"] == "1" { downloadModel() }
-            #endif
+            autoDownloadForTests()
+        } else {
+            // First launch (or 0.5.3's v3 only): check what this iPhone can run, then offer that download.
+            phase = .loading("Checking this iPhone…")
+            Task { await pickAutomatically() }
+        }
+    }
+
+    private func autoDownloadForTests() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["SPIEL_AUTODOWNLOAD"] == "1" { downloadModel() }
+        #endif
+    }
+
+    /// The automatic pick: the most accurate model this phone can run at ~600 MB, else Standard.
+    private func pickAutomatically() async {
+        let ok = await SpeechModel.probeInt8()
+        int8Supported = ok
+        let pick = SpeechModel.recommended(int8: ok)
+        SpeechModel.saved = pick
+        speechModel = pick
+        DiagnosticLog.write("speech model picked automatically: \(pick.engineName) (int8 probe \(ok ? "passed" : "failed"))")
+        phase = .needsDownload
+        autoDownloadForTests()
+    }
+
+    /// Runs the probe for Settings if it has not run on this iOS version yet.
+    func checkHardware() async {
+        guard int8Supported == nil else { return }
+        int8Supported = await SpeechModel.probeInt8()
+    }
+
+    /// Settings: switch to another speech model. The current one keeps its files until
+    /// the new one has loaded; if the new one fails, Spiel goes back to the old one.
+    func switchModel(to new: SpeechModel) {
+        guard new != speechModel, !inSession, !switchingModel else { return }
+        let previous = speechModel
+        let previousReady = session != nil
+        DiagnosticLog.write("speech model switch: \(previous.engineName) -> \(new.engineName)")
+        switchingModel = true
+        speechModel = new
+        SpeechModel.saved = new
+        session = nil
+        engineError = nil
+        phase = .loading("Starting…")
+        Task {
+            let ok = await loadEngine()
+            if !ok, previousReady, previous.isDownloaded {
+                DiagnosticLog.write("speech model switch failed; back to \(previous.engineName)")
+                speechModel = previous
+                SpeechModel.saved = previous
+                homeNote = "\(new.title) didn't load, so Spiel is back on \(previous.title)."
+                phase = .loading("Starting…")
+                await loadEngine()
+            }
+            switchingModel = false
         }
     }
 
@@ -131,15 +192,18 @@ final class ListenModel: ObservableObject {
 
     // MARK: - Engine
 
-    private func loadEngine() async {
+    @discardableResult
+    private func loadEngine() async -> Bool {
         let loadStarted = Date()
-        let transcriber = ParakeetUnifiedTranscriber(boost: false, precision: Self.modelPrecision) { p in
+        let choice = speechModel
+        let size = choice.sizeText
+        let transcriber = choice.makeTranscriber { p in
             let text: String
             var step = 0
             switch p.phase {
             case .listing: text = "Finding the speech model…"
             case .downloading:
-                text = "Downloading the speech model (about 1.2 GB, once)"; step = 1
+                text = "Downloading the speech model (\(size), once)"; step = 1
             case .compiling:
                 text = "Preparing the speech model for the Neural Engine. The first time can take a few minutes."; step = 2
             }
@@ -155,10 +219,28 @@ final class ListenModel: ObservableObject {
             }
             #endif
             try await s.prepare()
+            #if DEBUG
+            if choice == .accurate, ProcessInfo.processInfo.environment["SPIEL_FAIL_INT8"] == "1" {
+                throw TranscriberError.unavailable("simulated int8 compile failure")
+            }
+            #endif
         } catch {
             loadStep = nil
-            DiagnosticLog.write("engine load failed after \(Int(Date().timeIntervalSince(loadStarted))) s: \(error)")
+            DiagnosticLog.write("engine load failed after \(Int(Date().timeIntervalSince(loadStarted))) s (\(choice.engineName)): \(error)")
             preparing = nil
+            // The probe passed but the real ~600 MB model will not compile here: remember
+            // that, and fall back to Standard (never to another 600 MB try).
+            if choice == .accurate, choice.isDownloaded, !inSession {
+                SpeechModel.recordInt8(false)
+                int8Supported = false
+                SpeechModel.saved = .standard
+                speechModel = .standard
+                SpeechModel.removeUnusedSpeechModels(keep: .standard)
+                homeNote = "This iPhone can't run the 600 MB model, so Spiel is using Standard."
+                DiagnosticLog.write("int8 model failed to load after a passing probe; switched to Standard")
+                phase = .loading("Starting…")
+                return await loadEngine()
+            }
             if case .loading = phase {
                 phase = .failed("The speech model did not load: \(error)")
             } else {
@@ -166,7 +248,7 @@ final class ListenModel: ObservableObject {
                 if inSession { lastError = "The speech model did not load, so this meeting has no transcript yet." + (audioURL != nil ? " The audio is being kept." : "") }
                 if finishing { closeAfterStop(nil) }
             }
-            return
+            return false
         }
         DiagnosticLog.write("engine loaded in \(String(format: "%.1f", Date().timeIntervalSince(loadStarted))) s (build \(Self.currentBuild))")
         UserDefaults.standard.set(Self.currentBuild, forKey: Self.lastLoadedBuildKey)
@@ -179,15 +261,20 @@ final class ListenModel: ObservableObject {
         loadStep = nil
         preparing = nil
         Self.excludeModelsFromBackup()
-        Self.removeOldModel()
+        SpeechModel.removeUnusedSpeechModels(keep: choice)
         if case .loading = phase { phase = .ready }
         if case .failed = phase { phase = .ready }
         if inSession && phase != .transcribing { await catchUp(s) }
         #if DEBUG
+        if let to = ProcessInfo.processInfo.environment["SPIEL_SWITCH_TO"].flatMap(SpeechModel.init(rawValue:)),
+           to != choice, !switchingModel {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.switchModel(to: to) } }
+            return true
+        }
         if ProcessInfo.processInfo.environment["SPIEL_AUTOSTART"] == "1" {
             if let path = ProcessInfo.processInfo.environment["SPIEL_AUTOFILE"] {
                 transcribeFile(URL(fileURLWithPath: path))
-                return
+                return true
             }
             start(title: "Design review", location: "Workshop, Portland", keepAudio: true)
             if let secs = Double(ProcessInfo.processInfo.environment["SPIEL_AUTOSTOP"] ?? "") {
@@ -195,38 +282,16 @@ final class ListenModel: ObservableObject {
             }
         }
         #endif
+        return true
     }
 
     // MARK: - Speech model
 
-    /// Parakeet Unified EN 0.6B, the Mac's default engine since 2.2.0, replacing TDT v3
-    /// on the iPhone in 0.5.4. Measured 2026-11-23 on Christopher's counting recording
-    /// cut at 29 different places: v3 garbled the word at the 14 s cut and sometimes
-    /// returned nothing for a whole clear 10-14 s piece; Unified did neither.
-    /// fp16, not the Mac's int8: the int8 encoder cannot load on an A16 (iPhone 14 Pro)
-    /// on any compute unit (FluidAudio issue #828). No acoustic vocabulary boost here
-    /// (it needs a second 98 MB model and the macOS spell checker); the text glossary still runs.
-    static let modelPrecision: UnifiedEncoderPrecision = .fp16
-    static let engineName = "parakeet-unified-en-0.6b (fp16)"
-    static var modelDownloaded: Bool { ParakeetUnifiedTranscriber.isDownloaded(precision: modelPrecision) }
-
-    /// 0.5.x used TDT v3 (~460 MB). Once Unified has loaded, v3 is dead weight on the phone.
-    private static func removeOldModel() {
-        let old = AsrModels.defaultCacheDirectory(for: .v3)
-        guard FileManager.default.fileExists(atPath: old.path) else { return }
-        do {
-            try FileManager.default.removeItem(at: old)
-            DiagnosticLog.write("removed the old speech model (TDT v3)")
-        } catch {
-            DiagnosticLog.write("could not remove the old speech model: \(error)")
-        }
-    }
-
     /// The speech model is re-downloadable, so it stays out of iCloud/device backups
-    /// (Apple's data-storage rule; it would also add ~1.2 GB to every backup).
+    /// (Apple's data-storage rule; it would also add hundreds of MB to every backup).
     /// Transcripts and kept audio live in Documents and ARE backed up.
     private static func excludeModelsFromBackup() {
-        var dir = ParakeetUnifiedTranscriber.cacheDirectory.deletingLastPathComponent()
+        var dir = AsrModels.defaultCacheDirectory(for: .v2).deletingLastPathComponent()
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         do { try dir.setResourceValues(values) } catch { DiagnosticLog.write("could not exclude models from backup: \(error)") }
@@ -695,7 +760,7 @@ final class ListenModel: ObservableObject {
         let fm = TranscriptDocument.Frontmatter(
             title: title, startedAt: startedAt, endedAt: endedAt ?? Date(),
             version: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "dev") (iPhone)",
-            inputDevice: AudioCapture.currentInputName, engine: Self.engineName,
+            inputDevice: AudioCapture.currentInputName, engine: speechModel.engineName,
             location: location, audio: audioURL?.lastPathComponent, sourceFile: sourceFile, fileSeconds: fileSeconds)
         do {
             try TranscriptStore.save(doc.render(frontmatter: fm), to: url, replacing: fileURL)

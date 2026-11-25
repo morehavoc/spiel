@@ -268,6 +268,7 @@ struct HomeView: View {
     @State private var askDownload = false
     @State private var askedDownload = false
     @State private var editingShortcut = false
+    @State private var showModels = false
     @State private var shortcutName = ""
     @State private var toast: String?
     @State private var sharing: SavedTranscript?
@@ -283,6 +284,7 @@ struct HomeView: View {
                     Menu {
                         TextSizeItems(size: $size)
                         Divider()
+                        Button { showModels = true } label: { Label("Speech Model…", systemImage: "cpu") }
                         Button { shortcutName = ListenModel.stopShortcut ?? ""; editingShortcut = true } label: {
                             Label("Shortcut When Listen Stops", systemImage: "square.2.layers.3d")
                         }
@@ -294,6 +296,7 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showNew) { NewMeetingSheet().environmentObject(model) }
+            .sheet(isPresented: $showModels) { SpeechModelSheet().environmentObject(model) }
             .fullScreenCover(isPresented: Binding(get: { model.inSession }, set: { _ in })) {
                 NavigationStack { MeetingView() }
                     .environmentObject(model)
@@ -307,7 +310,7 @@ struct HomeView: View {
                 Button("Download Now") { model.downloadModel() }
                 Button("Later", role: .cancel) {}
             } message: {
-                Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of about 1.2 GB. Wi-Fi is recommended. After that, Spiel works with no internet.")
+                Text("Spiel transcribes on this iPhone, so it needs its speech model first: a one-time download of \(model.speechModel.sizeText). Wi-Fi is recommended. After that, Spiel works with no internet.")
             }
             .alert("Shortcut when Listen stops", isPresented: $editingShortcut) {
                 TextField("Shortcut name", text: $shortcutName)
@@ -325,6 +328,7 @@ struct HomeView: View {
             .onChange(of: model.savedCount) { items = SavedTranscript.all() }
             #if DEBUG
             .onAppear { if ProcessInfo.processInfo.environment["SPIEL_SHOW_NEW"] == "1" { showNew = true } }
+            .onAppear { if ProcessInfo.processInfo.environment["SPIEL_SHOW_MODELS"] == "1" { showModels = true } }
             #endif
     }
 
@@ -343,7 +347,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .needsDownload:
             HomeHero(onNew: { askDownload = true }, buttonTitle: "Download speech model", buttonIcon: "arrow.down.circle.fill",
-                     note: "Spiel needs a one-time download of about 1.2 GB before it can listen. Wi-Fi recommended.")
+                     note: "Spiel needs a one-time download of \(model.speechModel.sizeText) before it can listen. Wi-Fi recommended.")
         case .failed(let text):
             VStack(spacing: 18) {
                 Text(text).foregroundStyle(Theme.record).multilineTextAlignment(.center)
@@ -1116,5 +1120,63 @@ struct PlayerBar: View {
         .padding(.horizontal, 20).padding(.vertical, 12)
         .background(.ultraThinMaterial.opacity(0.9))
         .overlay(alignment: .top) { Rectangle().fill(Theme.cardStroke).frame(height: 1) }
+    }
+}
+
+
+/// Settings → Speech Model: the automatic pick, and the "Most accurate" upgrade this
+/// iPhone can run. Only the two models that make sense here are listed.
+struct SpeechModelSheet: View {
+    @EnvironmentObject var model: ListenModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirming: SpeechModel?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let int8 = model.int8Supported {
+                    Section {
+                        ForEach(SpeechModel.offered(int8: int8)) { m in
+                            Button { if m != model.speechModel { confirming = m } } label: {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(spacing: 6) {
+                                            Text(m.title).font(.body.weight(.semibold))
+                                            if m == SpeechModel.recommended(int8: int8) {
+                                                Text("Recommended").font(.caption2.weight(.semibold))
+                                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                                    .background(Theme.cyan.opacity(0.2), in: Capsule())
+                                            }
+                                        }
+                                        Text("\(m.note) Download \(m.sizeText).").font(.footnote).foregroundStyle(Theme.dim)
+                                    }
+                                    Spacer()
+                                    if m == model.speechModel {
+                                        if model.switchingModel { ProgressView() } else { Image(systemName: "checkmark").foregroundStyle(Theme.cyan) }
+                                    }
+                                }
+                            }
+                            .disabled(model.inSession || model.switchingModel)
+                        }
+                    } footer: {
+                        Text(model.inSession ? "Finish the meeting to change the model." :
+                             "Spiel picked the recommended model for this iPhone. The other one replaces it after it downloads, and Spiel keeps using the current one until then.")
+                    }
+                } else {
+                    HStack(spacing: 10) { ProgressView(); Text("Checking what this iPhone can run…") }
+                }
+            }
+            .navigationTitle("Speech Model")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task { await model.checkHardware() }
+            .alert("Switch to \(confirming?.title ?? "")?", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+                Button("Download \(confirming?.sizeText ?? "")") { if let m = confirming { model.switchModel(to: m) }; confirming = nil }
+                Button("Cancel", role: .cancel) { confirming = nil }
+            } message: {
+                Text("Wi-Fi is recommended. The current model is removed once the new one is ready.")
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
