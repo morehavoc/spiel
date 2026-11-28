@@ -174,6 +174,13 @@ final class ListenModel: ObservableObject {
         Task { await loadEngine() }
     }
 
+    /// An error for the diagnostics log: its domain and code only. Its description can
+    /// carry a transcript or audio file name (a meeting title), which the log never holds.
+    nonisolated static func logSafe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code)"
+    }
+
     private static let lastLoadedBuildKey = "ModelLoadedForBuild"
     private static var currentBuild: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?" }
     /// After an update iOS re-prepares the model for the Neural Engine, which takes minutes, not seconds.
@@ -374,7 +381,7 @@ final class ListenModel: ObservableObject {
             lastError = nil
             guard openMic() else { startedAt = nil; homeNote = lastError; return }
             phase = .recording
-            DiagnosticLog.write("meeting started: model ready \(session != nil), input \(AudioCapture.currentInputName), keep audio \(recorder != nil)")
+            DiagnosticLog.write("meeting started: model ready \(session != nil), input \(AudioCapture.currentInputKind), keep audio \(recorder != nil)")
             _ = capture.takeBufferStats(); _ = feed.takePassedSamples()
             health.start { [weak self] in self?.logHealth() }
             UIApplication.shared.isIdleTimerDisabled = true
@@ -568,7 +575,7 @@ final class ListenModel: ObservableObject {
                 DiagnosticLog.write("file transcription cancelled")
             } catch {
                 await session.reset()
-                DiagnosticLog.write("file transcription failed: \(error)")
+                DiagnosticLog.write("file transcription failed: \(Self.logSafe(error))")
                 lastError = "Could not finish that file: \(error)"
                 endedAt = Date()
                 if !doc.isEmpty { save() }
@@ -694,7 +701,7 @@ final class ListenModel: ObservableObject {
             return true
         } catch {
             lastError = "\(error)"
-            DiagnosticLog.write("mic start failed: \(error)")
+            DiagnosticLog.write("mic start failed: \(Self.logSafe(error))")
             if phase == .recording || phase == .paused { phase = .paused }
             return false
         }
@@ -786,7 +793,7 @@ final class ListenModel: ObservableObject {
             fileURL = url
         } catch {
             lastError = "Autosave failed: \(error). Copy the text before closing."
-            DiagnosticLog.write("autosave failed: \(error)")
+            DiagnosticLog.write("autosave failed: \(Self.logSafe(error))")
         }
     }
 
@@ -844,7 +851,7 @@ final class ListenModel: ObservableObject {
         observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { n in
             let reason = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             MainActor.assumeIsolated {
-                DiagnosticLog.write("iOS: audio route changed (\(Self.routeReason(reason))), input now \(AudioCapture.currentInputName), while \(self.phase)")
+                DiagnosticLog.write("iOS: audio route changed (\(Self.routeReason(reason))), input now \(AudioCapture.currentInputKind), while \(self.phase)")
                 guard self.phase == .recording,
                       reason == AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue
                         || reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }

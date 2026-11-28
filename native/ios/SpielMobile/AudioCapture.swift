@@ -51,6 +51,19 @@ public final class AudioCapture: @unchecked Sendable {
         AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "iPhone microphone"
     }
 
+    /// For the diagnostics log: the KIND of input, never its name ("Christopher's AirPods").
+    public static var currentInputKind: String {
+        guard let port = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portType else { return "none" }
+        switch port {
+        case .builtInMic: return "built-in mic"
+        case .bluetoothHFP, .bluetoothLE, .bluetoothA2DP: return "Bluetooth"
+        case .headsetMic: return "wired headset"
+        case .usbAudio: return "USB"
+        case .carAudio: return "car"
+        default: return "other"
+        }
+    }
+
     /// `.playAndRecord` + `.mixWithOthers` so Listen can run beside a call or a
     /// video app instead of interrupting it. No Bluetooth option: a meeting in a
     /// room is better heard by the phone's own mics than by AirPods in a pocket.
