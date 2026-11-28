@@ -110,9 +110,8 @@ final class ListenModel: ObservableObject {
             phase = .needsDownload
             autoDownloadForTests()
         } else {
-            // First launch (or 0.5.3's v3 only): check what this iPhone can run, then offer that download.
-            phase = .loading("Checking this iPhone…")
-            Task { await pickAutomatically() }
+            // First launch (or 0.5.3's v3 only): pick, then offer that download.
+            pickAutomatically()
         }
     }
 
@@ -123,21 +122,13 @@ final class ListenModel: ObservableObject {
     }
 
     /// The automatic pick: the most accurate model this phone can run at ~600 MB, else Standard.
-    private func pickAutomatically() async {
-        let ok = await SpeechModel.probeInt8()
-        int8Supported = ok
-        let pick = SpeechModel.recommended(int8: ok)
+    private func pickAutomatically() {
+        let pick = SpeechModel.recommended(int8: int8Supported)
         SpeechModel.saved = pick
         speechModel = pick
-        DiagnosticLog.write("speech model picked automatically: \(pick.engineName) (int8 probe \(ok ? "passed" : "failed"))")
+        DiagnosticLog.write("speech model picked automatically: \(pick.engineName) (int8 on this iPhone: \(int8Supported.map { $0 ? "loads" : "fails" } ?? "not tried yet"))")
         phase = .needsDownload
         autoDownloadForTests()
-    }
-
-    /// Runs the probe for Settings if it has not run on this iOS version yet.
-    func checkHardware() async {
-        guard int8Supported == nil else { return }
-        int8Supported = await SpeechModel.probeInt8()
     }
 
     /// Settings: switch to another speech model. The current one keeps its files until
@@ -235,8 +226,8 @@ final class ListenModel: ObservableObject {
             loadStep = nil
             DiagnosticLog.write("engine load failed after \(Int(Date().timeIntervalSince(loadStarted))) s (\(choice.engineName)): \(error)")
             preparing = nil
-            // The probe passed but the real ~600 MB model will not compile here: remember
-            // that, and fall back to Standard (never to another 600 MB try).
+            // The ~600 MB int8 model will not compile on this iPhone: remember that, and
+            // fall back to Standard (never another 600 MB try on this iOS version).
             if choice == .accurate, choice.isDownloaded, !inSession {
                 SpeechModel.recordInt8(false)
                 int8Supported = false
@@ -244,7 +235,7 @@ final class ListenModel: ObservableObject {
                 speechModel = .standard
                 SpeechModel.removeUnusedSpeechModels(keep: .standard)
                 homeNote = "This iPhone can't run the 600 MB model, so Spiel is using Standard."
-                DiagnosticLog.write("int8 model failed to load after a passing probe; switched to Standard")
+                DiagnosticLog.write("int8 model failed to load on this iPhone; switched to Standard")
                 phase = .loading("Starting…")
                 return await loadEngine()
             }
@@ -269,6 +260,7 @@ final class ListenModel: ObservableObject {
         preparing = nil
         Self.excludeModelsFromBackup()
         SpeechModel.removeUnusedSpeechModels(keep: choice)
+        if choice == .accurate, int8Supported != true { SpeechModel.recordInt8(true); int8Supported = true }
         if case .loading = phase { phase = .ready }
         if case .failed = phase { phase = .ready }
         if inSession && phase != .transcribing { await catchUp(s) }

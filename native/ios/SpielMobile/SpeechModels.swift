@@ -1,4 +1,3 @@
-import CoreML
 import Foundation
 import FluidAudio
 
@@ -11,12 +10,12 @@ import FluidAudio
 ///   accurateLarge  same, fp16 encoder   ~1.2 GB    0.62              6.7 %
 /// TDT v3 (0.5.3 and before) was 3.96 and 11.2 %, and lost whole pieces.
 ///
-/// The int8 Unified encoder does not load on an A16 (iPhone 14 Pro) on any compute
-/// unit (FluidAudio #828), and no one publishes which other iPhone chips take it: the
-/// only test is compiling it on the phone. So the app compiles a PROBE first: the real
-/// int8 encoder graph with its int8 weights zeroed, shipped in the bundle as ~3.6 MB
-/// (`Resources/UnifiedProbe`, rebuilt into a sparse file). Same graph, same quantised
-/// layout, so the phone's compiler accepts or rejects it the way it would the real one.
+/// Which iPhones run the int8 Unified encoder is not published (FluidAudio #828 says it
+/// fails on an A16; it loaded on his iPhone 14 Pro (A16) and iPhone Duo in Nov 2026). So
+/// every phone gets it first; if it will not load, the app records that (per iOS version),
+/// removes it and falls back to Standard, and Settings then offers the fp16 1.2 GB version.
+/// 0.5.5-0.5.6 compiled a zero-weight probe first; it cost 16-46 s on first launch and was
+/// dropped in 0.5.7 (his call, 2026-11-27).
 ///
 /// Kept to the one "speech model" slot on purpose: speaker labels (0.6) will add their
 /// own model slot beside this one, and `removeUnusedSpeechModels` never touches files
@@ -113,83 +112,13 @@ enum SpeechModel: String, CaseIterable, Identifiable {
     private static var osVersion: String { ProcessInfo.processInfo.operatingSystemVersionString }
 
     /// The models offered on this iPhone: Standard plus the one "Most accurate" it can run.
-    static func offered(int8: Bool) -> [SpeechModel] { [.standard, int8 ? .accurate : .accurateLarge] }
+    /// `int8` nil = not tried on this iPhone yet: offered as the ~600 MB version (a failed
+    /// load falls back to Standard and records false, and then the 1.2 GB one is offered).
+    static func offered(int8: Bool?) -> [SpeechModel] { [.standard, int8 == false ? .accurateLarge : .accurate] }
 
     /// The automatic pick: most accurate when the ~600 MB version runs here, else Standard
     /// (the 1.2 GB version is an upgrade the user chooses, never a default).
-    static func recommended(int8: Bool) -> SpeechModel { int8 ? .accurate : .standard }
-
-    // MARK: - Probe
-
-    /// Compiles the zero-weight int8 encoder on this phone. Cached per iOS version (a
-    /// new iOS can change the compiler). Never throws: a probe that cannot run is a fail.
-    static func probeInt8() async -> Bool {
-        #if DEBUG
-        if let forced = ProcessInfo.processInfo.environment["SPIEL_FORCE_PROBE"] {
-            recordInt8(forced == "pass"); return forced == "pass"
-        }
-        #endif
-        if let known = int8Supported { return known }
-        let started = Date()
-        let ok: Bool
-        do {
-            let url = try buildProbe()
-            defer { try? FileManager.default.removeItem(at: url) }
-            let cfg = MLModelConfiguration()
-            cfg.computeUnits = .cpuAndNeuralEngine
-            _ = try await MLModel.load(contentsOf: url, configuration: cfg)
-            ok = true
-            DiagnosticLog.write("int8 probe: compiled on this iPhone in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
-        } catch {
-            ok = false
-            DiagnosticLog.write("int8 probe: refused after \(String(format: "%.1f", Date().timeIntervalSince(started))) s: \(error)")
-        }
-        recordInt8(ok)
-        return ok
-    }
-
-    /// Rebuilds the probe `.mlmodelc` in Caches from the bundle: weight.bin is the
-    /// original size with the int8 data left as zeros (a sparse file, ~2.5 MB on disk).
-    static func buildProbe() throws -> URL {
-        guard let src = Bundle.main.url(forResource: "UnifiedProbe", withExtension: nil) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        let fm = FileManager.default
-        let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("unified-int8-probe.mlmodelc", isDirectory: true)
-        try? fm.removeItem(at: dir)
-        try fm.createDirectory(at: dir.appendingPathComponent("weights"), withIntermediateDirectories: true)
-        try fm.createDirectory(at: dir.appendingPathComponent("analytics"), withIntermediateDirectories: true)
-        try fm.copyItem(at: src.appendingPathComponent("model.mil"), to: dir.appendingPathComponent("model.mil"))
-        try fm.copyItem(at: src.appendingPathComponent("coremldata.bin"), to: dir.appendingPathComponent("coremldata.bin"))
-        try fm.copyItem(at: src.appendingPathComponent("analytics-coremldata.bin"),
-                        to: dir.appendingPathComponent("analytics/coremldata.bin"))
-        try writeWeights(segments: src.appendingPathComponent("weight.segments"),
-                         to: dir.appendingPathComponent("weights/weight.bin"))
-        return dir
-    }
-
-    /// Format (tools: native/ios/scripts/make-unified-probe.py): "SPCN", u64 total size,
-    /// u32 count, then count × (u64 offset, u64 length, bytes).
-    static func writeWeights(segments: URL, to out: URL) throws {
-        let d = try Data(contentsOf: segments)
-        func u64(_ at: Int) -> UInt64 { d.subdata(in: at..<at + 8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) } }
-        func u32(_ at: Int) -> UInt32 { d.subdata(in: at..<at + 4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) } }
-        guard d.count >= 16, d.prefix(4) == Data("SPCN".utf8) else { throw CocoaError(.fileReadCorruptFile) }
-        let total = u64(4), count = Int(u32(12))
-        FileManager.default.createFile(atPath: out.path, contents: nil)
-        let h = try FileHandle(forWritingTo: out)
-        defer { try? h.close() }
-        try h.truncate(atOffset: total)
-        var p = 16
-        for _ in 0..<count {
-            let off = u64(p), len = Int(u64(p + 8)); p += 16
-            guard p + len <= d.count else { throw CocoaError(.fileReadCorruptFile) }
-            try h.seek(toOffset: off)
-            try h.write(contentsOf: d.subdata(in: p..<p + len))
-            p += len
-        }
-    }
+    static func recommended(int8: Bool?) -> SpeechModel { int8 == false ? .standard : .accurate }
 
     // MARK: - Cleanup
 

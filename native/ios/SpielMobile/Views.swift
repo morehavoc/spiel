@@ -1165,7 +1165,8 @@ struct SpeechModelSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if let int8 = model.int8Supported {
+                let int8 = model.int8Supported
+                do {
                     Section {
                         ForEach(SpeechModel.offered(int8: int8)) { m in
                             Button { if m != model.speechModel { confirming = m } } label: {
@@ -1193,14 +1194,11 @@ struct SpeechModelSheet: View {
                         Text(model.inSession ? "Finish the meeting to change the model." :
                              "Spiel picked the recommended model for this iPhone. The other one replaces it after it downloads, and Spiel keeps using the current one until then.")
                     }
-                } else {
-                    HStack(spacing: 10) { ProgressView(); Text("Checking what this iPhone can run…") }
                 }
             }
             .navigationTitle("Speech Model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task { await model.checkHardware() }
             .alert("Switch to \(confirming?.title ?? "")?", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
                 Button("Download \(confirming?.sizeText ?? "")") { if let m = confirming { model.switchModel(to: m) }; confirming = nil }
                 Button("Cancel", role: .cancel) { confirming = nil }

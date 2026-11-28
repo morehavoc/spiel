@@ -20,9 +20,9 @@ from the Mac app on languages and vocabulary is in the [FAQ](faq.md).
 
 ## First launch
 
-Spiel first checks what this iPhone can run (a few seconds), then asks before downloading
-its speech model: about 600 MB on iPhones that can run the most accurate model at that size,
-otherwise the Standard model, about 440 MB. Wi-Fi is a good idea. You can choose **Later** and tap **Download speech model** on the home
+Spiel asks before downloading its speech model, the most accurate one, about 600 MB. If an
+iPhone can't run it, Spiel switches to the Standard model (about 440 MB) on its own and says so
+on Home. Wi-Fi is a good idea. You can choose **Later** and tap **Download speech model** on the home
 screen when you're ready. Setup then shows two steps:
 
 Spiel shows the download with a percentage. When it's done you're on the home screen and can
@@ -32,7 +32,7 @@ few minutes.
 ## Speech model
 
 Gear → **Speech Model…** shows the two models this iPhone can run: **Standard** (about 440 MB)
-and **Most accurate** (about 600 MB, or about 1.2 GB on iPhones that can't run the smaller
+and **Most accurate** (about 600 MB, or about 1.2 GB on an iPhone that couldn't run the smaller
 version of it). The recommended one is marked. Switching downloads the other model; Spiel keeps
 using the current one until the new one is ready, then removes the old one.
 

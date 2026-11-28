@@ -22,10 +22,6 @@ targets:
     platform: iOS
     sources:
       - path: SpielMobile
-      # The int8 Unified encoder graph with zeroed weights (SpeechModels.swift probe).
-      - path: Resources/UnifiedProbe
-        type: folder
-        buildPhase: resources
       - path: ../Sources/SpielCore/Transcriber.swift
       - path: ../Sources/SpielCore/TranscriptAssembler.swift
       - path: ../Sources/SpielCore/VoiceActivityDetector.swift
@@ -49,7 +45,7 @@ targets:
       properties:
         CFBundleDisplayName: Spiel Listen
         ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: "0.5.6"
+        CFBundleShortVersionString: "0.5.7"
         CFBundleVersion: "2"
         UILaunchScreen: {}
         NSCalendarsFullAccessUsageDescription: Spiel offers the meeting on your calendar right now as the transcript's title. Nothing is changed or sent anywhere.
